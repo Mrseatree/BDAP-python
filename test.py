@@ -23,11 +23,13 @@ dify_url = "https://api.dify.ai/v1/chat-messages"
 
 class ChatRequest(BaseModel):
     model: ModelName
-    question: Optional[str] = None
+    question: str
+    requestId: str
 
 
 class ChatResponse(BaseModel):
     answer: str
+    requestId: str
 
 
 app = FastAPI()
@@ -58,8 +60,8 @@ async def call_dify(model: str, question: str) -> str:
         async with httpx.AsyncClient(timeout = timeout) as client:
             resp = await client.post(dify_url, headers = headers, json = data)
 
-            print("状态码:",resp.status_code)
-            print("原始内容:",resp.text)
+            print("状态码:", resp.status_code)
+            print("原始内容:", resp.text)
 
             if resp.status_code == 504:
                 return "[Dify错误] Gateway Timeout（504），模型响应超时，稍后再试"
@@ -85,13 +87,9 @@ async def call_dify(model: str, question: str) -> str:
 
 
 # 接口的返回值应当符合ChatResponse的Pydantic模型结构
-@app.post("/models", response_model = ChatResponse)
+@app.post("/llm", response_model = ChatResponse)
 async def get_model(request: ChatRequest):
     if not request.question:
         return ChatResponse(answer = "question不能为空")
-    # print(f"Received request: model={request.model}, question={request.question}")
-
-    # fake_answer = f"[{request.model}] 你说的是：{request.question}"
-    # return ChatResponse(answer = fake_answer)
     answer = await call_dify(request.model, request.question)
-    return ChatResponse(answer = answer)
+    return ChatResponse(answer = answer, request_id = request.requestId)
