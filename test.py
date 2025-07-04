@@ -14,7 +14,7 @@ class ModelName(str, Enum):
 
 MODEL_TO_APIKEY = {
     "chatGPT":"sk-xxxxxxxxxx-chatgpt",
-    "deepseek":"app-ApKEHa7JA4vqjwEFxbzjXAZq",
+    "deepseek":"app-yyyyyyyyyyyy-deepseek",
     "tongyi":"sk-zzzzzzzzzz-tongyi"
 }
 
