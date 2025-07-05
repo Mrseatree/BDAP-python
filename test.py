@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI,HTTPException
 from pydantic import BaseModel
 from enum import Enum
 import httpx
@@ -7,15 +7,15 @@ from typing import Optional
 
 # 例子，后续需要将其中的模型名字进行规范
 class ModelName(str, Enum):
-    deepseek = "deepseek"
-    chatGPT = "chatGPT"
-    tongyi = "tongyi"
+    silicon_flow = "silicon-flow"
+    OpenAI = "OpenAI"
+    moonshot = "moonshot"
 
 
 MODEL_TO_APIKEY = {
-    "chatGPT":"sk-xxxxxxxxxx-chatgpt",
-    "deepseek":"app-yyyyyyyyyyyy-deepseek",
-    "tongyi":"sk-zzzzzzzzzz-tongyi"
+    "OpenAI":"",
+    "silicon-flow":"",
+    "moonshot":""
 }
 
 dify_url = "https://api.dify.ai/v1/chat-messages"
@@ -64,32 +64,34 @@ async def call_dify(model: str, question: str) -> str:
             print("原始内容:", resp.text)
 
             if resp.status_code == 504:
-                return "[Dify错误] Gateway Timeout（504），模型响应超时，稍后再试"
+                raise HTTPException(status_code = 504, detail = "[Dify错误]模型响应超时，稍后再试")
 
             try:
                 result = resp.json()  # 只在成功时赋值
             except Exception as e:
-                return f"[响应格式错误]无法解析JSON:{e}\n原始响应:{resp.text}"
+                raise HTTPException(status_code = 502, detail = f"[响应格式错误]无法解析JSON:{e}\n原始响应:{resp.text}")
 
             if "answer" in result:
                 return result["answer"]
             elif "message" in result:
-                return f"[Dify错误] {result['message']}"
+                raise HTTPException(status_code = 502, detail = f"[Dify错误] {result['message']}")
             else:
-                return "[Dify响应格式异常]"
+                raise HTTPException(status_code = 502, detail = "[Dify响应格式异常]")
+
 
     except httpx.ReadTimeout:
-        return "[超时] Dify 响应超时"
+        raise HTTPException(status_code = 504, detail = "[超时] Dify 响应超时")
     except httpx.RequestError as e:
-        return f"[请求失败] {e}"
+        raise HTTPException(status_code = 502, detail = f"[请求失败] {e}")
     except Exception as e:
-        return f"[未知错误] {e}"
+        raise HTTPException(status_code = 500, detail = f"[未知错误] {e}")
 
 
 # 接口的返回值应当符合ChatResponse的Pydantic模型结构
 @app.post("/llm", response_model = ChatResponse)
 async def get_model(request: ChatRequest):
     if not request.question:
-        return ChatResponse(answer = "question不能为空")
+        raise HTTPException(status_code=400, detail="question 不能为空")
+
     answer = await call_dify(request.model, request.question)
-    return ChatResponse(answer = answer, request_id = request.requestId)
+    return ChatResponse(answer = answer, requestId = request.requestId)
