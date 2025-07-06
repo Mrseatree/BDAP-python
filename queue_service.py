@@ -120,8 +120,6 @@ class QueueManager:
                 "timestamp":datetime.now().isoformat() + "Z"
             }
 
-        await self._send_status_to_java()
-
     def add_request(self, request: ProcessRequest) -> int:
         request_data = {
             "requestId":request.requestId,
