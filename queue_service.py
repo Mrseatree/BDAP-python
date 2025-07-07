@@ -84,9 +84,9 @@ class QueueManager:
 
     async def _process_request(self, request_data: dict, model: str):
         try:
-            async with httpx.AsyncClient(timeout = 30.0) as client:
+            async with httpx.AsyncClient(timeout = 30.0,proxies = None) as client:
                 response = await client.post(
-                    "http://localhost:8001/llm",  ##
+                    "http://localhost:8000/llm",  ##
                     json = {
                         "model":model,
                         "question":request_data["prompt"],
