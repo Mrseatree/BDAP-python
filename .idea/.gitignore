@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # 默认忽略的文件
 /shelf/
 /workspace.xml
@@ -29,3 +30,8 @@ ENV/
 # pytest
 .cache/
 
+=======
+# 默认忽略的文件
+/shelf/
+/workspace.xml
+>>>>>>> 4df5c0ed5c84de57702736e4501a31fc04792115
