@@ -9,6 +9,10 @@ import time
 from datetime import datetime
 from call_llm import call_dify
 import uuid
+import consul
+import socket
+import os
+import atexit
 
 
 class ProcessRequest(BaseModel):
@@ -54,7 +58,7 @@ class QueueManager:
         self.pushed_request_ids: set = set()
         self.push_lock = threading.Lock()
 
-        for model in ["gpt-4", "DeepSeek-R1", "moonshot-v1-8k"]:
+        for model in ["OpenAI", "silicon-flow", "moonshot"]:
             self.queues[model] = Queue()
             self.processing_count[model] = 0
             self.start_worker(model)
@@ -163,8 +167,8 @@ class QueueManager:
                     "completedRequests":new_completed
                 }
 
-                # TODO：替换为java端口的地址
-                java_backend_url = "http://java-backend/llm/queue/update"
+                #java端口的地址
+                java_backend_url = "http://localhost:8001/llm/queue/update"  # 使用实际的Java服务地址和端口
 
                 async with httpx.AsyncClient(timeout = 10.0) as client:
                     resp = await client.post(java_backend_url, json = payload)
@@ -182,6 +186,69 @@ class QueueManager:
 queue_manager = QueueManager()
 queue_manager.start_background_push_loop()
 app = FastAPI()
+
+# 添加服务启动和关闭事件
+@app.on_event("startup")
+async def startup_event():
+    """服务启动时注册到Consul"""
+    service_id = register_service()
+    if service_id:
+        app.state.service_id = service_id
+        print(f"queue_service服务已注册到Consul，服务ID: {service_id}")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """服务关闭时从Consul注销"""
+    if hasattr(app.state, 'service_id'):
+        deregister_service(app.state.service_id)
+
+# Consul配置
+CONSUL_HOST = os.getenv('CONSUL_HOST', 'localhost')
+CONSUL_PORT = int(os.getenv('CONSUL_PORT', 8500))
+SERVICE_NAME = 'queue-service'
+SERVICE_PORT = 8001
+SERVICE_ID = f"{SERVICE_NAME}-8001" 
+DATACENTER = "dssc"  
+
+def get_host_info():
+    """获取主机信息"""
+    return "bdap-cluster-03"  # 直接返回固定主机名
+
+def register_service():
+    """注册服务到Consul"""
+    try:
+        c = consul.Consul(host=CONSUL_HOST, port=CONSUL_PORT)
+        service_id = SERVICE_ID
+        host = get_host_info()
+        
+        c.agent.service.register(
+            name=SERVICE_NAME,
+            service_id=service_id,
+            address=host,
+            port=SERVICE_PORT,
+            tags=["secure=false"],  # 匹配现有标签
+            check=consul.Check.http(f"http://{host}:{SERVICE_PORT}/health", interval="10s"),
+            datacenter=DATACENTER
+        )
+        print(f"服务 {SERVICE_NAME} 已注册到Consul: {host}:{SERVICE_PORT}")
+        return service_id
+    except Exception as e:
+        print(f"注册服务到Consul失败: {e}")
+        return None
+
+def deregister_service(service_id):
+    """从Consul注销服务"""
+    try:
+        c = consul.Consul(host=CONSUL_HOST, port=CONSUL_PORT)
+        c.agent.service.deregister(service_id)
+        print(f"服务 {service_id} 已从Consul注销")
+    except Exception as e:
+        print(f"从Consul注销服务失败: {e}")
+
+# 健康检查端点
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy", "service": SERVICE_NAME}
 
 
 @app.post("/llm/process", response_model = ProcessResponse)
@@ -225,5 +292,12 @@ async def get_queue_status():
 
 if __name__ == "__main__":
     import uvicorn
-
-    uvicorn.run(app, host = "localhost", port = 8001)
+    
+    # 注册服务到Consul
+    service_id = register_service()
+    
+    # 程序退出时注销服务
+    if service_id:
+        atexit.register(deregister_service, service_id)
+    
+    uvicorn.run(app, host="localhost", port=SERVICE_PORT)
