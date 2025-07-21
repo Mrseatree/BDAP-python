@@ -17,9 +17,13 @@ processing:
     - ""
 
 embedding:
-  model_type: "huggingface"     # 嵌入模型类型 (huggingface/openai)
-  model_name: "BAAI/bge-large-zh-v1.5"  # HuggingFace模型
-  # openai_api_key: "sk-..."    # OpenAI密钥
+  model_type: "bge"
+  model_name: "BAAI/bge-m3"
+  model_path: "./models/BAAI/bge-m3"  # 如果你本地已经下载
+  encode_kwargs:
+    normalize_embeddings: true
+  device: "cpu"  # 或者 cpu
+
 
 metadata:
   default_title: "BDAP技术文档"
