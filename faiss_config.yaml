@@ -1,6 +1,6 @@
 # config.yaml
 data:
-  input_path: "data/documents"  # 文档存储目录
+  input_path: "./data/documents"  # 文档存储目录
   file_pattern:                 # 文件匹配模式
     - "*.pdf"
     - "*.docx"
