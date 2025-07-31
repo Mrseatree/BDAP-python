@@ -1,3 +1,9 @@
+import fastapi
+
+app = fastapi.FastAPI()
+
+
+@app.post("/tools/drop-empty-rows")
 def drop_empty_rows(file_path: str, output_path: str) -> dict:
     import pandas as pd
     try:
@@ -16,6 +22,7 @@ def drop_empty_rows(file_path: str, output_path: str) -> dict:
         }
 
 
+@app.post("/tools/fill-missing-with-mean")
 def fill_missing_with_mean(file_path: str, output_path: str) -> dict:
     import pandas as pd
     try:
@@ -34,6 +41,7 @@ def fill_missing_with_mean(file_path: str, output_path: str) -> dict:
         }
 
 
+@app.post("/tools/fill-missing-with-median")
 def fill_missing_with_median(file_path: str, output_path: str) -> dict:
     import pandas as pd
     try:
@@ -52,6 +60,7 @@ def fill_missing_with_median(file_path: str, output_path: str) -> dict:
         }
 
 
+@app.post("/tools/fill-missing-with-constant")
 def fill_missing_with_constant(file_path: str, con: int, output_path: str) -> dict:
     import pandas as pd
     try:
@@ -70,6 +79,7 @@ def fill_missing_with_constant(file_path: str, con: int, output_path: str) -> di
         }
 
 
+@app.post("/tools/fill-missing-with-mode")
 def fill_missing_with_mode(file_path: str, output_path: str) -> dict:
     import pandas as pd
     try:
@@ -88,6 +98,7 @@ def fill_missing_with_mode(file_path: str, output_path: str) -> dict:
         }
 
 
+@app.post("/tools/filter-by-column")
 def filter_by_column(file_path: str, column: str, condition, value, output_path: str) -> dict:
     import pandas as pd
     try:
@@ -119,6 +130,7 @@ def filter_by_column(file_path: str, column: str, condition, value, output_path:
         }
 
 
+@app.post("/tools/rename-column")
 def rename_column(file_path: str, old_name: str, new_name: str, output_path: str) -> dict:
     import pandas as pd
     try:
@@ -139,6 +151,7 @@ def rename_column(file_path: str, old_name: str, new_name: str, output_path: str
         }
 
 
+@app.post("/tools/convert-column-type")
 def convert_column_type(file_path: str, column: str, target_type: str, output_path: str) -> dict:
     import pandas as pd
     df = pd.read_csv(file_path)
@@ -167,6 +180,7 @@ def convert_column_type(file_path: str, column: str, target_type: str, output_pa
     }
 
 
+@app.post("/tools/aggregate-column")
 def aggregate_column(file_path: str, group_by: str, target_column: str,
                      agg_func: str, output_path: str) -> dict:
     import pandas as pd
@@ -188,6 +202,7 @@ def aggregate_column(file_path: str, group_by: str, target_column: str,
         }
 
 
+@app.post("/tools/sort-by-column")
 def sort_by_column(file_path: str, column: str, output_path: str, ascending: bool = True) -> dict:
     import pandas as pd
     try:
