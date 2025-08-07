@@ -1,0 +1,37 @@
+<<<<<<< HEAD
+# 默认忽略的文件
+/shelf/
+/workspace.xml
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+ehthumbs.db
+
+# Virtualenv
+venv/
+env/
+ENV/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# pytest
+.cache/
+
+=======
+# 默认忽略的文件
+/shelf/
+/workspace.xml
+>>>>>>> 4df5c0ed5c84de57702736e4501a31fc04792115
