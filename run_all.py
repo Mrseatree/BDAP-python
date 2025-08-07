@@ -15,7 +15,7 @@ subprocess.Popen(["uvicorn", "tool_functions:app", "--host", "0.0.0.0", "--port"
 subprocess.Popen(["uvicorn", "file_server:app", "--host", "0.0.0.0", "--port", "8003"])
 
 
-print("三个服务已启动:")
+print("四个服务已启动:")
 
 print("- call_llm服务: http://0.0.0.0:8000")
 
