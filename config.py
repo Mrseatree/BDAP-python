@@ -14,3 +14,5 @@ CONSUL_PORT = int(os.getenv('CONSUL_PORT', 8500))
 SERVICE_NAME = 'py-llm-service'  # 改为与服务名一致
 
 #DATACENTER = "dssc"
+
+SEARXNG_URL = os.getenv("SEARXNG_URL", "http://127.0.0.1:8080")
