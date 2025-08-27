@@ -1,6 +1,6 @@
 [
     {
-        "id": "5ffc93e2dedafd1104e66849",
+        "name": "加载数据",
         "simpleAttributes": [
             {
                 "name": "filePath",
@@ -45,12 +45,12 @@
         "complicatedAttributes": []
     },
     {
-        "id": "5ffd5fbcdedafd1104e6684c",
+        "name": "表格",
         "simpleAttributes": [],
         "complicatedAttributes": []
     },
     {
-        "id": "6002ac30ea7bee1ae40691b1",
+        "name": "填充/删除空白行",
         "simpleAttributes": [
             {
                 "name": "mode",
@@ -67,7 +67,7 @@
         "complicatedAttributes": []
     },
     {
-        "id": "6002b247ea7bee1ae40691b2",
+        "name": "K-均值",
         "simpleAttributes": [
             {
                 "name": "K",
@@ -111,7 +111,7 @@
         ]
     },
     {
-        "id": "600690693cc78942904d31ac",
+        "name": "决策树",
         "simpleAttributes": [
             {
                 "name": "modelPath",
@@ -206,7 +206,7 @@
         ]
     },
     {
-        "id": "6006911a3cc78942904d31ae",
+        "name": "数据分割",
         "simpleAttributes": [
             {
                 "name": "ratio",
@@ -220,7 +220,7 @@
         "complicatedAttributes": []
     },
     {
-        "id": "60080f8e5689b852cc01049f",
+        "name": "groupBy",
         "simpleAttributes": [
             {
                 "name": "field",
@@ -240,7 +240,7 @@
         ]
     },
     {
-        "id": "6008dcf313467f28349ae299",
+        "name": "数据处理",
         "simpleAttributes": [],
         "complicatedAttributes": [
             {
@@ -251,7 +251,7 @@
         ]
     },
     {
-        "id": "60099b145a22c159b8d34141",
+        "name": "逻辑回归",
         "simpleAttributes": [
             {
                 "name": "modelName",
@@ -313,7 +313,7 @@
         ]
     },
     {
-        "id": "600bd2fd732e7d3af0e477fa",
+        "name": "朴素贝叶斯",
         "simpleAttributes": [
             {
                 "name": "modelName",
@@ -370,7 +370,7 @@
         ]
     },
     {
-        "id": "600e604d034c9d5230b74f3b",
+        "name": "FP-Growth",
         "simpleAttributes": [
             {
                 "name": "itemCol",
@@ -412,7 +412,7 @@
         "complicatedAttributes": []
     },
     {
-        "id": "600690a53cc78942904d31ad",
+        "name": "多分类评估器",
         "simpleAttributes": [
             {
                 "name": "metricName",
@@ -449,7 +449,7 @@
         "complicatedAttributes": []
     },
     {
-        "id": "603b1ded81ba063c28bf6d21",
+        "name": "加载文本文件",
         "simpleAttributes": [
             {
                 "name": "filePath",
@@ -463,7 +463,7 @@
         "complicatedAttributes": []
     },
     {
-        "id": "603b2b4081ba063c28bf6d22",
+        "name": "词频-逆向文件频率",
         "simpleAttributes": [
             {
                 "name": "modelName",
@@ -493,7 +493,7 @@
         "complicatedAttributes": []
     },
     {
-        "id": "6040aa13cca0d37a807f666d",
+        "name": "交替最小二乘法",
         "simpleAttributes": [
             {
                 "name": "maxIter",
@@ -547,7 +547,7 @@
         "complicatedAttributes": []
     },
     {
-        "id": "6041da78c6a3083dd4ca7c40",
+        "name": "列投影",
         "simpleAttributes": [],
         "complicatedAttributes": [
             {
@@ -558,7 +558,7 @@
         ]
     },
     {
-        "id": "60432b507a89fe50988efd51",
+        "name": "转换类型",
         "simpleAttributes": [],
         "complicatedAttributes": [
             {
@@ -569,27 +569,27 @@
         ]
     },
     {
-        "id": "6098e95a053870391d0ff214",
+        "name": "折线图",
         "simpleAttributes": [],
         "complicatedAttributes": []
     },
     {
-        "id": "6098e987053870391d0ff215",
+        "name": "饼图",
         "simpleAttributes": [],
         "complicatedAttributes": []
     },
     {
-        "id": "6098e9c6053870391d0ff216",
+        "name": "柱状图",
         "simpleAttributes": [],
         "complicatedAttributes": []
     },
     {
-        "id": "6098ea00053870391d0ff217",
+        "name": "散点图",
         "simpleAttributes": [],
         "complicatedAttributes": []
     },
     {
-        "id": "60a20d7f98a1c7259407422f",
+        "name": "Apriori",
         "simpleAttributes": [
             {
                 "name": "itemCol",
@@ -631,7 +631,7 @@
         "complicatedAttributes": []
     },
     {
-        "id": "60a21d2a98a1c72594074230",
+        "name": "隐含狄利克雷分布",
         "simpleAttributes": [
             {
                 "name": "numOfTopics",
@@ -661,7 +661,7 @@
         "complicatedAttributes": []
     },
     {
-        "id": "60a21d9f98a1c72594074231",
+        "name": "高斯混合模型",
         "simpleAttributes": [
             {
                 "name": "numOfGaussianMixture",
@@ -675,7 +675,7 @@
         "complicatedAttributes": []
     },
     {
-        "id": "60a61fae3957d24554d1054a",
+        "name": "计算生成列",
         "simpleAttributes": [],
         "complicatedAttributes": [
             {
@@ -686,7 +686,7 @@
         ]
     },
     {
-        "id": "609f3d50dec01348f23f46de",
+        "name": "线性回归",
         "simpleAttributes": [
             {
                 "name": "modelName",
@@ -746,7 +746,7 @@
         ]
     },
     {
-        "id": "60a0ea0834c57b909f98aab2",
+        "name": "多分类SVM",
         "simpleAttributes": [
             {
                 "name": "modelName",
@@ -798,17 +798,17 @@
         ]
     },
     {
-        "id": "614ae88cbbd8771b74029512",
+        "name": "增加id列",
         "simpleAttributes": [],
         "complicatedAttributes": []
     },
     {
-        "id": "614bd89dd6ea46f80fa8ad4f",
+        "name": "数据处理",
         "simpleAttributes": [],
         "complicatedAttributes": []
     },
     {
-        "id": "61828fdeea227126fcad7e3b",
+        "name": "分类邻居个数",
         "simpleAttributes": [
             {
                 "name": "K",
@@ -836,7 +836,7 @@
         ]
     },
     {
-        "id": "6194fe096fb6584592ae9d39",
+        "name": "主成分分析",
         "simpleAttributes": [
             {
                 "name": "k",
@@ -856,7 +856,7 @@
         ]
     },
     {
-        "id": "61a47f272a664aea714155e3",
+        "name": "归一化",
         "simpleAttributes": [
             {
                 "name": "mode",
@@ -881,7 +881,7 @@
         ]
     },
     {
-        "id": "61a5d4b42a664aea714155ec",
+        "name": "MySQL数据读取",
         "simpleAttributes": [
             {
                 "name": "url",
@@ -935,7 +935,7 @@
         "complicatedAttributes": []
     },
     {
-        "id": "61a728a22a664aea714155f3",
+        "name": "MySQL数据存储",
         "simpleAttributes": [
             {
                 "name": "url",
@@ -1002,7 +1002,7 @@
         "complicatedAttributes": []
     },
     {
-        "id": "649e892335caad9625c6e76b",
+        "name": "连接",
         "simpleAttributes": [
             {
                 "name": "mode",
@@ -1037,7 +1037,7 @@
         "complicatedAttributes": []
     },
     {
-        "id": "650114304c637ca62aa83c88",
+        "name": "选择",
         "simpleAttributes": [],
         "complicatedAttributes": [
             {
@@ -1048,27 +1048,27 @@
         ]
     },
     {
-        "id": "662b50d4ddb9c88a4fcac171",
+        "name": "加载Cora数据集",
         "simpleAttributes": [],
         "complicatedAttributes": []
     },
     {
-        "id": "662b6d4a18f07cb5ac8562f9",
+        "name": "初始化GCN",
         "simpleAttributes": [],
         "complicatedAttributes": []
     },
     {
-        "id": "662b6d8018f07cb5ac8562fa",
+        "name": "训练GCN",
         "simpleAttributes": [],
         "complicatedAttributes": []
     },
     {
-        "id": "662b6d9d18f07cb5ac8562fb",
+        "name": "测试GCN",
         "simpleAttributes": [],
         "complicatedAttributes": []
     },
     {
-        "id": "6630a2a770ba4d53f92da385",
+        "name": "BERT",
         "simpleAttributes": [
             {
                 "name": "labelCol",

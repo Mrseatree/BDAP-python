@@ -11,7 +11,7 @@ class SimplifiedWorkflowValidator:
         self.max_nodes = max_nodes
         self.warnings = []
         self.errors = []
-        self.node_map = {}  # 使用 (id, mark) 作为键
+        self.node_map = {}  # 使用 (name, mark) 作为键
         self.components_config = loadComponentConfig()
 
     def sanitize(self, workflow_data: dict) -> Tuple[dict, List[str], List[str]]:
@@ -36,7 +36,7 @@ class SimplifiedWorkflowValidator:
         seen_keys = set()
 
         for node in nodes:
-            node_key = (node['id'], node['mark'])
+            node_key = node['seqId']
 
             # 检查必需字段
             if not self._validate_node_structure(node):
@@ -50,12 +50,17 @@ class SimplifiedWorkflowValidator:
             seen_keys.add(node_key)
 
             # 组件白名单验证
-            if node['id'] not in self.whitelist:
-                original_id = node['id']
-                node['id'] = self._find_nearest_component(original_id)
-                self.warnings.append(f"替换无效组件: {original_id} -> {node['id']}")
-                # 更新节点键
-                node_key = (node['id'], node['mark'])
+            # TODO:如果是非法的组件该如何？直接报错还是试图修复？
+            if node['name'] not in self.whitelist:
+                self.errors.append(f"无效的组件名: '{node['name']}'")
+                continue  # 跳过这个节点，不加入有效节点列表
+            # 若尝试修复：
+            # if node['name'] not in self.whitelist:
+            #     original_name = node['name']
+            #     node['name'] = self._find_nearest_component(original_name)
+            #     self.warnings.append(f"替换无效组件: {original_name} -> {node['name']}")
+            #     # 更新节点键
+            #     node_key = (node['name'], node['mark'])
 
             # 验证属性
             self._sanitize_attributes(node)
@@ -92,9 +97,9 @@ class SimplifiedWorkflowValidator:
 
     def _validate_node_structure(self, node: dict) -> bool:
         """验证节点基本结构"""
-        required_fields = {'id', 'mark', 'position'}
+        required_fields = {'name', 'seqId', 'position'}
         if not required_fields.issubset(node.keys()):
-            self.warnings.append(f"节点缺少必需字段: {node.get('id', 'unknown')}")
+            self.warnings.append(f"节点缺少必需字段: {node.get('name', 'unknown')}")
             return False
         return True
 
@@ -106,7 +111,7 @@ class SimplifiedWorkflowValidator:
             anchor.setdefault('seq', 0)
             anchor.setdefault('sourceAnchors', [])
             for s_anchor in anchor['sourceAnchors']:
-                s_anchor.setdefault('id', '')
+                s_anchor.setdefault('name', '')
                 s_anchor.setdefault('mark', 0)
 
         # 输出锚点
@@ -115,22 +120,22 @@ class SimplifiedWorkflowValidator:
             anchor.setdefault('seq', 0)
             anchor.setdefault('targetAnchors', [])
             for t_anchor in anchor['targetAnchors']:
-                t_anchor.setdefault('id', '')
+                t_anchor.setdefault('name', '')
                 t_anchor.setdefault('mark', 0)
 
     def _validate_connections(self, node: dict):
         """验证连接关系"""
-        node_key = (node['id'], node['mark'])
+        node_key = node['seqId']
 
         # 验证输入连接
         for anchor in node['inputAnchors']:
             valid_sources = []
             for s_anchor in anchor.get('sourceAnchors', []):
-                source_key = (s_anchor.get('id', ''), s_anchor.get('mark', 0))
+                source_key = s_anchor.get('id', '')
 
-                if source_key[0] and source_key in self.node_map:
+                if source_key and source_key in self.node_map:
                     valid_sources.append(s_anchor)
-                elif source_key[0]:
+                elif source_key:
                     self.warnings.append(f"节点{node_key}引用了不存在的源节点: {source_key}")
 
             anchor['sourceAnchors'] = valid_sources
@@ -139,11 +144,11 @@ class SimplifiedWorkflowValidator:
         for anchor in node['outputAnchors']:
             valid_targets = []
             for t_anchor in anchor.get('targetAnchors', []):
-                target_key = (t_anchor.get('id', ''), t_anchor.get('mark', 0))
+                target_key = t_anchor.get('id', '')
 
-                if target_key[0] and target_key in self.node_map:
+                if target_key and target_key in self.node_map:
                     valid_targets.append(t_anchor)
-                elif target_key[0]:
+                elif target_key:
                     self.warnings.append(f"节点{node_key}引用了不存在的目标节点: {target_key}")
 
             anchor['targetAnchors'] = valid_targets
@@ -155,7 +160,7 @@ class SimplifiedWorkflowValidator:
         for node_key, node in self.node_map.items():
             for anchor in node.get('inputAnchors', []):
                 for s_anchor in anchor.get('sourceAnchors', []):
-                    source_key = (s_anchor['id'], s_anchor['mark'])
+                    source_key = s_anchor.get('id','')
                     graph[source_key].append(node_key)
 
         # 使用DFS检测循环
@@ -187,19 +192,19 @@ class SimplifiedWorkflowValidator:
         """
         根据节点信息校验属性是否符合规范
         Args:
-            node: 节点字典，包含id、componentId和attributes等信息
+            node: 节点字典，包含name和attributes等信息
         Returns:
             包含错误信息的字典，键为错误类型，值为错误消息列表
         """
-        # 获取组件ID和属性
-        component_id = node.get("id")
+        # 获取组件名和属性
+        component_name = node.get("name")
         provided_attrs = {**node.get("simpleAttributes", {}), **node.get("complicatedAttributes", {})}
 
         # 查找组件配置
-        component_config = self.components_config.get(component_id)
+        component_config = self.components_config.get(component_name)
         if not component_config:
-            node_id = node.get("id", "未知节点")
-            return {"component_not_found":[f"节点 '{node_id}': 未找到ID为 '{component_id}' 的组件配置"]}
+            node_name = node.get("name", "未知节点")
+            return {"component_not_found":[f"节点 '{node_name}': 未找到name为 '{component_name}' 的组件配置"]}
 
         errors = {
             "missing_required":[],  # 缺失必填参数
@@ -240,12 +245,12 @@ class SimplifiedWorkflowValidator:
                     f"参数 '{chinese_name}' 类型错误: 期望 {expected_type}, 实际 {type(attr_value).__name__}"
                 )
 
-            # 选项检查（仅适用于有预定义选项的参数）
-            if allowed_options and attr_value not in allowed_options:
-                chinese_name = attr_config.get("chineseName", attr_name)
-                errors["invalid_option"].append(
-                    f"参数 '{chinese_name}' 值 '{attr_value}' 无效，可选值: {allowed_options}"
-                )
+            # # 选项检查（仅适用于有预定义选项的参数）
+            # if allowed_options and attr_value not in allowed_options:
+            #     chinese_name = attr_config.get("chineseName", attr_name)
+            #     errors["invalid_option"].append(
+            #         f"参数 '{chinese_name}' 值 '{attr_value}' 无效，可选值: {allowed_options}"
+            #     )
 
         # 移除空错误列表
         return {k:v for k, v in errors.items() if v}
