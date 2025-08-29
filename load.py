@@ -11,7 +11,7 @@ def loadComponentConfig(config_path: str):
         components_config = json.load(f)
 
     # 创建以id为键的组件字典，便于快速查找
-    components_by_id = {comp["name"]:comp for comp in components_config}
+    components_by_id = {comp["id"]:comp for comp in components_config}
     return components_by_id
 
 
@@ -22,5 +22,5 @@ def loadWhiteList(config_path: str):
     with open(config_path, "r", encoding = 'utf-8') as f:
         components = json.load(f)
 
-    whiteList = {comp["name"] for comp in components}
+    whiteList = {comp["id"] for comp in components}
     return whiteList

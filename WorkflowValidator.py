@@ -7,12 +7,12 @@ from load import loadComponentConfig,loadWhiteList
 
 class SimplifiedWorkflowValidator:
     def __init__(self, max_nodes: int = 10):
-        self.whitelist = loadWhiteList()
+        self.whitelist = loadWhiteList("./component_whitelist.json")
         self.max_nodes = max_nodes
         self.warnings = []
         self.errors = []
         self.node_map = {}  # 使用 (name, mark) 作为键
-        self.components_config = loadComponentConfig()
+        self.components_config = loadComponentConfig("./component_whitelist.json")
 
     def sanitize(self, workflow_data: dict) -> Tuple[dict, List[str], List[str]]:
         # 重置状态
@@ -51,8 +51,8 @@ class SimplifiedWorkflowValidator:
 
             # 组件白名单验证
             # TODO:如果是非法的组件该如何？直接报错还是试图修复？
-            if node['name'] not in self.whitelist:
-                self.errors.append(f"无效的组件名: '{node['name']}'")
+            if node['id'] not in self.whitelist:
+                self.errors.append(f"无效的组件名: '{node['id']}'")
                 continue  # 跳过这个节点，不加入有效节点列表
             # 若尝试修复：
             # if node['name'] not in self.whitelist:
@@ -97,9 +97,9 @@ class SimplifiedWorkflowValidator:
 
     def _validate_node_structure(self, node: dict) -> bool:
         """验证节点基本结构"""
-        required_fields = {'name', 'seqId', 'position'}
+        required_fields = {'id', 'seqId', 'position'}
         if not required_fields.issubset(node.keys()):
-            self.warnings.append(f"节点缺少必需字段: {node.get('name', 'unknown')}")
+            self.warnings.append(f"节点缺少必需字段: {node.get('id', 'unknown')}")
             return False
         return True
 
@@ -111,7 +111,7 @@ class SimplifiedWorkflowValidator:
             anchor.setdefault('seq', 0)
             anchor.setdefault('sourceAnchors', [])
             for s_anchor in anchor['sourceAnchors']:
-                s_anchor.setdefault('name', '')
+                s_anchor.setdefault('id', '')
                 s_anchor.setdefault('mark', 0)
 
         # 输出锚点
@@ -120,7 +120,7 @@ class SimplifiedWorkflowValidator:
             anchor.setdefault('seq', 0)
             anchor.setdefault('targetAnchors', [])
             for t_anchor in anchor['targetAnchors']:
-                t_anchor.setdefault('name', '')
+                t_anchor.setdefault('id', '')
                 t_anchor.setdefault('mark', 0)
 
     def _validate_connections(self, node: dict):
@@ -197,7 +197,7 @@ class SimplifiedWorkflowValidator:
             包含错误信息的字典，键为错误类型，值为错误消息列表
         """
         # 获取组件名和属性
-        component_name = node.get("name")
+        component_name = node.get("id")
         provided_attrs = {**node.get("simpleAttributes", {}), **node.get("complicatedAttributes", {})}
 
         # 查找组件配置
