@@ -2,27 +2,67 @@ import fastapi
 from fastapi import FastAPI
 from consul_utils import register_service, deregister_service
 from config import SERVICE_NAME
-from typing import Optional, Union, Any, Dict, Tuple
+from typing import Optional, Union, Any
 from pydantic import BaseModel
 import atexit
 import os
 import json
-import re
 
 app = FastAPI()
 
-# 数据处理请求模型
-class DataProcessRequest(BaseModel):
-    user_prompt: str                    # 用户需求描述
-    input_path: str                     # 输入文件路径
-    output_path: Optional[str] = None   # 输出文件路径
-
-# 数据处理响应模型
-class DataProcessResponse(BaseModel):
-    status: str  # success 或 error
-    message: str
-    output_file: Optional[str] = None
-    error_details: Optional[str] = None
+# 统一的参数模型
+class UnifiedToolParams(BaseModel):
+    file_path: str
+    output_path: Optional[str] = None  # 改为可选
+    # 使用字符串来存储动态参数，然后转换为字典
+    params: Optional[str] = "{}"
+    
+    # 为了向后兼容，保留常用的直接参数
+    column: Optional[str] = None
+    old_name: Optional[str] = None
+    new_name: Optional[str] = None
+    condition: Optional[str] = None
+    value: Optional[Union[str, int, float, bool]] = None
+    target_type: Optional[str] = None
+    group_by: Optional[str] = None
+    target_column: Optional[str] = None
+    agg_func: Optional[str] = None
+    ascending: Optional[bool] = True
+    constant_value: Optional[Union[str, int, float]] = None
+    
+    def _parse_params(self) -> dict:
+        """将字符串形式的params转换为字典"""
+        try:
+            if not self.params or self.params.strip() == "":
+                return {}
+            return json.loads(self.params)
+        except json.JSONDecodeError as e:
+            print(f"解析params参数失败: {e}, 使用空字典")
+            return {}
+    
+    def get_param(self, key: str, default=None):
+        """获取参数值，优先从直接参数获取，然后从params字典获取"""
+        # 首先检查直接参数
+        direct_value = getattr(self, key, None)
+        if direct_value is not None:
+            return direct_value
+        
+        # 然后从params字典中获取
+        params_dict = self._parse_params()
+        return params_dict.get(key, default)
+    
+    def ensure_output_path(self, suffix: str = "_processed"):
+        """确保output_path存在，如果没有则自动生成"""
+        if not self.output_path:
+            base_name = os.path.splitext(self.file_path)[0]
+            self.output_path = f"{base_name}{suffix}.csv"
+        
+        # 确保输出目录存在
+        output_dir = os.path.dirname(self.output_path)
+        if output_dir and not os.path.exists(output_dir):
+            os.makedirs(output_dir, exist_ok=True)
+        
+        return self.output_path
 
 # 添加服务启动和关闭事件
 @app.on_event("startup")
@@ -31,7 +71,7 @@ async def startup_event():
     service_id = start_tool_functions_service()
     if service_id:
         app.state.service_id = service_id
-        print(f"data_process服务已注册到Consul，服务ID: {service_id}")
+        print(f"tool_functions服务已注册到Consul，服务ID: {service_id}")
 
 
 @app.on_event("shutdown")
@@ -51,330 +91,139 @@ def start_tool_functions_service():
 # 健康检查端点
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy", "service": "data-process"}
+    return {"status": "healthy", "service": "tool-functions"}
 
 
-def parse_user_prompt(user_prompt: str) -> Tuple[Optional[str], Optional[Dict]]:
-    """
-    解析用户自然语言描述，提取操作类型和参数
-    返回 (操作类型, 参数字典)
-    """
-    user_prompt_lower = user_prompt.lower()
-    
-    # 删除空行相关的关键词
-    if any(keyword in user_prompt_lower for keyword in ['删除空行', '去除空行', '删除缺失', 'drop empty', 'remove empty']):
-        return 'drop_empty_rows', {}
-    
-    # 填充缺失值相关
-    if '平均值' in user_prompt_lower or 'mean' in user_prompt_lower:
-        return 'fill_missing_mean', {}
-    
-    if '中位数' in user_prompt_lower or 'median' in user_prompt_lower:
-        return 'fill_missing_median', {}
-    
-    if '众数' in user_prompt_lower or 'mode' in user_prompt_lower:
-        return 'fill_missing_mode', {}
-    
-    # 常数填充 - 需要提取常数值
-    constant_match = re.search(r'用.?(\d+|零|一|二|三|四|五|六|七|八|九).?填充', user_prompt_lower)
-    if constant_match or '常数填充' in user_prompt_lower:
-        constant_value = 0  # 默认值
-        if constant_match:
-            try:
-                constant_value = int(constant_match.group(1))
-            except:
-                # 处理中文数字或其他情况
-                pass
-        return 'fill_missing_constant', {'constant_value': constant_value}
-    
-    # 筛选操作
-    if '筛选' in user_prompt_lower or 'filter' in user_prompt_lower:
-        # 尝试解析筛选条件
-        # 例如: "筛选年龄大于30的数据"
-        column_match = re.search(r'筛选.?(\w+).?(大于|小于|等于|不等于|>=|<=|>|<|==|!=).?(\d+|\w+)', user_prompt)
-        if column_match:
-            column = column_match.group(1)
-            condition_text = column_match.group(2)
-            value = column_match.group(3)
-            
-            # 转换条件
-            condition_map = {
-                '大于': '>', '小于': '<', '等于': '==', '不等于': '!=',
-                '>=': '>=', '<=': '<=', '>': '>', '<': '<', '==': '==', '!=': '!='
-            }
-            condition = condition_map.get(condition_text, '==')
-            
-            # 尝试转换值的类型
-            try:
-                value = float(value)
-                if value.is_integer():
-                    value = int(value)
-            except:
-                pass  # 保持字符串类型
-            
-            return 'filter_by_column', {'column': column, 'condition': condition, 'value': value}
-        return 'filter_by_column', {}  # 需要更多参数信息
-    
-    # 重命名列
-    rename_match = re.search(r'重命名.?(\w+).?(为|成).?(\w+)', user_prompt)
-    if rename_match or '重命名' in user_prompt_lower:
-        if rename_match:
-            old_name = rename_match.group(1)
-            new_name = rename_match.group(3)
-            return 'rename_column', {'old_name': old_name, 'new_name': new_name}
-        return 'rename_column', {}  # 需要更多参数信息
-    
-    # 类型转换
-    type_match = re.search(r'转换.?(\w+).?(为|成).?(整数|浮点数|字符串|布尔|int|float|str|bool)', user_prompt_lower)
-    if type_match or '类型转换' in user_prompt_lower:
-        if type_match:
-            column = type_match.group(1)
-            target_type_text = type_match.group(3)
-            
-            type_map = {
-                '整数': 'int', '浮点数': 'float', '字符串': 'str', '布尔': 'bool',
-                'int': 'int', 'float': 'float', 'str': 'str', 'bool': 'bool'
-            }
-            target_type = type_map.get(target_type_text, 'str')
-            
-            return 'convert_column_type', {'column': column, 'target_type': target_type}
-        return 'convert_column_type', {}  # 需要更多参数信息
-    
-    # 聚合操作
-    agg_match = re.search(r'按.?(\w+).?分组.?(求和|平均值|最大值|最小值|计数|sum|mean|max|min|count).?(\w+)', user_prompt_lower)
-    if agg_match or '聚合' in user_prompt_lower or '分组' in user_prompt_lower:
-        if agg_match:
-            group_by = agg_match.group(1)
-            agg_func_text = agg_match.group(2)
-            target_column = agg_match.group(3)
-            
-            agg_map = {
-                '求和': 'sum', '平均值': 'mean', '最大值': 'max', '最小值': 'min', '计数': 'count',
-                'sum': 'sum', 'mean': 'mean', 'max': 'max', 'min': 'min', 'count': 'count'
-            }
-            agg_func = agg_map.get(agg_func_text, 'sum')
-            
-            return 'aggregate_column', {'group_by': group_by, 'target_column': target_column, 'agg_func': agg_func}
-        return 'aggregate_column', {}  # 需要更多参数信息
-    
-    # 排序操作
-    sort_match = re.search(r'按.?(\w+).?(升序|降序|排序)', user_prompt_lower)
-    if sort_match or '排序' in user_prompt_lower:
-        if sort_match:
-            column = sort_match.group(1)
-            order = sort_match.group(2)
-            ascending = order != '降序'
-            return 'sort_by_column', {'column': column, 'ascending': ascending}
-        return 'sort_by_column', {}  # 需要更多参数信息
-    
-    return None, {}
-
-
-# 统一的数据处理接口
-@app.post("/data-process/execute", response_model=DataProcessResponse)
-async def execute_data_process(request: DataProcessRequest) -> DataProcessResponse:
-    """
-    统一的数据处理接口，根据用户描述解析操作类型并执行相应的数据处理操作
-    """
-    try:
-        # 检查输入文件是否存在
-        if not os.path.exists(request.input_path):
-            return DataProcessResponse(
-                status="error",
-                message="输入文件不存在",
-                error_details=f"文件路径: {request.input_path}"
-            )
-        
-        # 解析用户需求描述
-        operation, parameters = parse_user_prompt(request.user_prompt)
-        
-        if not operation:
-            return DataProcessResponse(
-                status="error",
-                message="无法理解用户需求描述",
-                error_details=f"用户描述: {request.user_prompt}。请尝试使用更具体的描述，如'删除空行'、'用平均值填充缺失值'等"
-            )
-        
-        # 如果没有指定输出路径，自动生成
-        if not request.output_path:
-            base_name = os.path.splitext(request.input_path)[0]
-            request.output_path = f"{base_name}_{operation}_processed.csv"
-        
-        # 确保输出目录存在
-        output_dir = os.path.dirname(request.output_path)
-        if output_dir and not os.path.exists(output_dir):
-            os.makedirs(output_dir, exist_ok=True)
-        
-        # 创建一个包含解析参数的请求对象
-        class LegacyRequest:
-            def __init__(self, input_path, output_path, operation, parameters):
-                self.input_path = input_path
-                self.output_path = output_path
-                self.operation = operation
-                self.parameters = parameters
-        
-        legacy_request = LegacyRequest(request.input_path, request.output_path, operation, parameters)
-        
-        # 根据操作类型执行相应的处理
-        if operation == "drop_empty_rows":
-            result = _drop_empty_rows(legacy_request)
-        elif operation == "fill_missing_mean":
-            result = _fill_missing_with_mean(legacy_request)
-        elif operation == "fill_missing_median":
-            result = _fill_missing_with_median(legacy_request)
-        elif operation == "fill_missing_constant":
-            result = _fill_missing_with_constant(legacy_request)
-        elif operation == "fill_missing_mode":
-            result = _fill_missing_with_mode(legacy_request)
-        elif operation == "filter_by_column":
-            result = _filter_by_column(legacy_request)
-        elif operation == "rename_column":
-            result = _rename_column(legacy_request)
-        elif operation == "convert_column_type":
-            result = _convert_column_type(legacy_request)
-        elif operation == "aggregate_column":
-            result = _aggregate_column(legacy_request)
-        elif operation == "sort_by_column":
-            result = _sort_by_column(legacy_request)
-        else:
-            return DataProcessResponse(
-                status="error",
-                message="不支持的操作类型",
-                error_details=f"操作类型: {operation}"
-            )
-        
-        return result
-    
-    except Exception as e:
-        return DataProcessResponse(
-            status="error",
-            message="处理过程中发生错误",
-            error_details=str(e)
-        )
-
-
-def _drop_empty_rows(request) -> DataProcessResponse:
+@app.post("/tools/drop-empty-rows")
+def drop_empty_rows(params: UnifiedToolParams) -> dict:
     import pandas as pd
     try:
-        df = pd.read_csv(request.input_path)
+        df = pd.read_csv(params.file_path)
         cleaned_df = df.dropna()
-        cleaned_df.to_csv(request.output_path, index=False)
         
-        return DataProcessResponse(
-            status="success",
-            message="已删除所有空白行",
-            output_file=request.output_path
-        )
+        # 自动生成output_path
+        output_path = params.ensure_output_path("_no_empty_rows")
+        
+        cleaned_df.to_csv(output_path, index=False)
+        return {
+            "status": "success",
+            "message": "已删除所有空白行",
+            "output_file": output_path
+        }
     except Exception as e:
-        return DataProcessResponse(
-            status="error",
-            message="去除空白行处理失败",
-            error_details=str(e)
-        )
+        return {
+            "status": "error",
+            "message": f"去除空白行处理失败{str(e)}"
+        }
 
 
-def _fill_missing_with_mean(request) -> DataProcessResponse:
+@app.post("/tools/fill-missing-with-mean")
+def fill_missing_with_mean(params: UnifiedToolParams) -> dict:
     import pandas as pd
     try:
-        df = pd.read_csv(request.input_path)
+        df = pd.read_csv(params.file_path)
         df = df.fillna(df.mean(numeric_only=True))
-        df.to_csv(request.output_path, index=False)
         
-        return DataProcessResponse(
-            status="success",
-            message="已使用平均值填补缺失值",
-            output_file=request.output_path
-        )
+        # 自动生成output_path
+        output_path = params.ensure_output_path("_filled_mean")
+        
+        df.to_csv(output_path, index=False)
+        return {
+            "status": "success",
+            "message": "已使用平均值填补缺失值",
+            "output_file": output_path
+        }
     except Exception as e:
-        return DataProcessResponse(
-            status="error",
-            message="使用平均值填补缺失值处理失败",
-            error_details=str(e)
-        )
+        return {
+            "status": "error",
+            "message": f"使用平均值填补缺失值处理失败:{str(e)}"
+        }
 
 
-def _fill_missing_with_median(request) -> DataProcessResponse:
+@app.post("/tools/fill-missing-with-median")
+def fill_missing_with_median(params: UnifiedToolParams) -> dict:
     import pandas as pd
     try:
-        df = pd.read_csv(request.input_path)
+        df = pd.read_csv(params.file_path)
         df = df.fillna(df.median(numeric_only=True))
-        df.to_csv(request.output_path, index=False)
         
-        return DataProcessResponse(
-            status="success",
-            message="已使用中位数填补缺失值",
-            output_file=request.output_path
-        )
+        # 自动生成output_path
+        output_path = params.ensure_output_path("_filled_median")
+        
+        df.to_csv(output_path, index=False)
+        return {
+            "status": "success",
+            "message": "已使用中位数填补缺失值",
+            "output_file": output_path
+        }
     except Exception as e:
-        return DataProcessResponse(
-            status="error",
-            message="使用中位数填补缺失值处理失败",
-            error_details=str(e)
-        )
+        return {
+            "status": "error",
+            "message": f"使用中位数填补缺失值处理失败:{str(e)}"
+        }
 
 
-def _fill_missing_with_constant(request) -> DataProcessResponse:
+@app.post("/tools/fill-missing-with-constant")
+def fill_missing_with_constant(params: UnifiedToolParams) -> dict:
     import pandas as pd
     try:
-        df = pd.read_csv(request.input_path)
-        constant_value = request.parameters.get('constant_value')
+        df = pd.read_csv(params.file_path)
+        constant_value = params.get_param('constant_value') or params.get_param('value')
         if constant_value is None:
-            return DataProcessResponse(
-                status="error",
-                message="需要在描述中指定填充的常数值",
-                error_details="例如：'用0填充缺失值'"
-            )
+            raise ValueError("需要提供constant_value或value参数")
         
         df = df.fillna(constant_value)
-        df.to_csv(request.output_path, index=False)
         
-        return DataProcessResponse(
-            status="success",
-            message=f"已使用常数{constant_value}填补缺失值",
-            output_file=request.output_path
-        )
+        # 自动生成output_path
+        output_path = params.ensure_output_path("_filled_constant")
+        
+        df.to_csv(output_path, index=False)
+        return {
+            "status": "success",
+            "message": "已使用常数填补缺失值",
+            "output_file": output_path
+        }
     except Exception as e:
-        return DataProcessResponse(
-            status="error",
-            message="使用常数填补缺失值处理失败",
-            error_details=str(e)
-        )
+        return {
+            "status": "error",
+            "message": f"使用常数填补缺失值处理失败:{str(e)}"
+        }
 
 
-def _fill_missing_with_mode(request) -> DataProcessResponse:
+@app.post("/tools/fill-missing-with-mode")
+def fill_missing_with_mode(params: UnifiedToolParams) -> dict:
     import pandas as pd
     try:
-        df = pd.read_csv(request.input_path)
+        df = pd.read_csv(params.file_path)
         df = df.fillna(df.mode().iloc[0])
-        df.to_csv(request.output_path, index=False)
         
-        return DataProcessResponse(
-            status="success",
-            message="已使用众数填补缺失值",
-            output_file=request.output_path
-        )
+        # 自动生成output_path
+        output_path = params.ensure_output_path("_filled_mode")
+        
+        df.to_csv(output_path, index=False)
+        return {
+            "status": "success",
+            "message": "已使用众数填补缺失值",
+            "output_file": output_path
+        }
     except Exception as e:
-        return DataProcessResponse(
-            status="error",
-            message="使用众数填补缺失值处理失败",
-            error_details=str(e)
-        )
+        return {
+            "status": "error",
+            "message": f"使用众数填补缺失值处理失败:{str(e)}"
+        }
 
 
-def _filter_by_column(request) -> DataProcessResponse:
+@app.post("/tools/filter-by-column")
+def filter_by_column(params: UnifiedToolParams) -> dict:
     import pandas as pd
     try:
-        df = pd.read_csv(request.input_path)
-        column = request.parameters.get('column')
-        condition = request.parameters.get('condition')
-        value = request.parameters.get('value')
+        df = pd.read_csv(params.file_path)
+        column = params.get_param('column')
+        condition = params.get_param('condition')
+        value = params.get_param('value')
         
         if not column or not condition or value is None:
-            return DataProcessResponse(
-                status="error",
-                message="需要在描述中指定列名、条件和值",
-                error_details="例如：'筛选年龄大于30的数据'"
-            )
+            raise ValueError("需要提供column、condition和value参数")
         
         if condition == '==':
             df = df[df[column] == value]
@@ -389,84 +238,67 @@ def _filter_by_column(request) -> DataProcessResponse:
         elif condition == '<=':
             df = df[df[column] <= value]
         else:
-            return DataProcessResponse(
-                status="error",
-                message="不支持的条件",
-                error_details=f"条件: {condition}"
-            )
+            raise ValueError("不支持的条件")
         
-        df.to_csv(request.output_path, index=False)
+        # 自动生成output_path
+        output_path = params.ensure_output_path(f"_filtered_{column}_{condition}_{value}")
         
-        return DataProcessResponse(
-            status="success",
-            message=f"已完成筛选，条件：{column} {condition} {value}",
-            output_file=request.output_path
-        )
+        df.to_csv(output_path, index=False)
+        return {
+            "status": "success",
+            "message": "已完成筛选",
+            "output_file": output_path
+        }
     except Exception as e:
-        return DataProcessResponse(
-            status="error",
-            message="筛选处理失败",
-            error_details=str(e)
-        )
+        return {
+            "status": "error",
+            "message": f"筛选处理失败{str(e)}"
+        }
 
 
-def _rename_column(request) -> DataProcessResponse:
+@app.post("/tools/rename-column")
+def rename_column(params: UnifiedToolParams) -> dict:
     import pandas as pd
     try:
-        df = pd.read_csv(request.input_path)
-        old_name = request.parameters.get('old_name')
-        new_name = request.parameters.get('new_name')
+        df = pd.read_csv(params.file_path)
+        old_name = params.get_param('old_name')
+        new_name = params.get_param('new_name')
         
         if not old_name or not new_name:
-            return DataProcessResponse(
-                status="error",
-                message="需要在描述中指定原列名和新列名",
-                error_details="例如：'重命名age为年龄'"
-            )
-        
+            raise ValueError("需要提供old_name和new_name参数")
         if old_name not in df.columns:
-            return DataProcessResponse(
-                status="error",
-                message=f"列{old_name}不存在",
-                error_details=f"可用列: {list(df.columns)}"
-            )
+            raise ValueError(f"列{old_name}不存在")
         
         df = df.rename(columns={old_name: new_name})
-        df.to_csv(request.output_path, index=False)
         
-        return DataProcessResponse(
-            status="success",
-            message=f"已将列'{old_name}'重命名为'{new_name}'",
-            output_file=request.output_path
-        )
+        # 自动生成output_path
+        output_path = params.ensure_output_path(f"_renamed_{old_name}_to_{new_name}")
+        
+        df.to_csv(output_path, index=False)
+        return {
+            "status": "success",
+            "message": "已完成重命名",
+            "output_file": output_path
+        }
     except Exception as e:
-        return DataProcessResponse(
-            status="error",
-            message="重命名处理失败",
-            error_details=str(e)
-        )
+        return {
+            "status": "error",
+            "message": f"重命名处理失败{str(e)}"
+        }
 
 
-def _convert_column_type(request) -> DataProcessResponse:
+@app.post("/tools/convert-column-type")
+def convert_column_type(params: UnifiedToolParams) -> dict:
     import pandas as pd
     try:
-        df = pd.read_csv(request.input_path)
-        column = request.parameters.get('column')
-        target_type = request.parameters.get('target_type')
+        df = pd.read_csv(params.file_path)
+        column = params.get_param('column')
+        target_type = params.get_param('target_type')
         
         if not column or not target_type:
-            return DataProcessResponse(
-                status="error",
-                message="需要在描述中指定列名和目标类型",
-                error_details="例如：'转换age为整数'"
-            )
-        
+            raise ValueError("需要提供column和target_type参数")
         if column not in df.columns:
-            return DataProcessResponse(
-                status="error",
-                message=f"列{column}不存在",
-                error_details=f"可用列: {list(df.columns)}"
-            )
+            raise ValueError(f"列{column}不存在")
         
         if target_type == "int":
             df[column] = df[column].astype(int)
@@ -477,98 +309,83 @@ def _convert_column_type(request) -> DataProcessResponse:
         elif target_type == "bool":
             df[column] = df[column].astype(bool)
         else:
-            return DataProcessResponse(
-                status="error",
-                message="不支持的目标类型",
-                error_details=f"目标类型: {target_type}, 支持的类型: int, float, str, bool"
-            )
+            raise ValueError("不支持的目标类型")
         
-        df.to_csv(request.output_path, index=False)
+        # 自动生成output_path
+        output_path = params.ensure_output_path(f"_converted_{column}_to_{target_type}")
         
-        return DataProcessResponse(
-            status="success",
-            message=f"已将列'{column}'转换为{target_type}类型",
-            output_file=request.output_path
-        )
+        df.to_csv(output_path, index=False)
+        return {
+            "status": "success",
+            "message": "已完成类型转换",
+            "output_file": output_path
+        }
     except Exception as e:
-        return DataProcessResponse(
-            status="error",
-            message="类型转换处理失败",
-            error_details=str(e)
-        )
+        return {
+            "status": "error",
+            "message": f"类型转换处理失败{str(e)}"
+        }
 
 
-def _aggregate_column(request) -> DataProcessResponse:
+@app.post("/tools/aggregate-column")
+def aggregate_column(params: UnifiedToolParams) -> dict:
     import pandas as pd
     try:
-        df = pd.read_csv(request.input_path)
-        group_by = request.parameters.get('group_by')
-        target_column = request.parameters.get('target_column')
-        agg_func = request.parameters.get('agg_func')
+        df = pd.read_csv(params.file_path)
+        group_by = params.get_param('group_by')
+        target_column = params.get_param('target_column')
+        agg_func = params.get_param('agg_func')
         
         if not group_by or not target_column or not agg_func:
-            return DataProcessResponse(
-                status="error",
-                message="需要在描述中指定分组列、目标列和聚合函数",
-                error_details="例如：'按部门分组求销售额的平均值'"
-            )
-        
+            raise ValueError("需要提供group_by、target_column和agg_func参数")
         if agg_func not in ['sum', 'mean', 'max', 'min', 'count']:
-            return DataProcessResponse(
-                status="error",
-                message="不支持此类聚合",
-                error_details=f"聚合函数: {agg_func}, 支持的函数: sum, mean, max, min, count"
-            )
+            raise ValueError("不支持此类聚合")
         
         grouped = df.groupby(group_by)[target_column].agg(agg_func).reset_index()
-        grouped.to_csv(request.output_path, index=False)
         
-        return DataProcessResponse(
-            status="success",
-            message=f"已按'{group_by}'分组对'{target_column}'进行{agg_func}聚合",
-            output_file=request.output_path
-        )
+        # 自动生成output_path
+        output_path = params.ensure_output_path(f"_aggregated_{group_by}_{agg_func}")
+        
+        grouped.to_csv(output_path, index=False)
+        return {
+            "status": "success",
+            "message": "已完成聚合",
+            "output_file": output_path
+        }
     except Exception as e:
-        return DataProcessResponse(
-            status="error",
-            message="聚合处理失败",
-            error_details=str(e)
-        )
+        return {
+            "status": "error",
+            "message": f"聚合处理失败{str(e)}"
+        }
 
 
-def _sort_by_column(request) -> DataProcessResponse:
+@app.post("/tools/sort-by-column")
+def sort_by_column(params: UnifiedToolParams) -> dict:
     import pandas as pd
     try:
-        df = pd.read_csv(request.input_path)
-        column = request.parameters.get('column')
-        ascending = request.parameters.get('ascending', True)
+        df = pd.read_csv(params.file_path)
+        column = params.get_param('column')
+        ascending = params.get_param('ascending', True)
         
         if not column:
-            return DataProcessResponse(
-                status="error",
-                message="需要在描述中指定排序的列名",
-                error_details="例如：'按年龄升序排序'"
-            )
-        
+            raise ValueError("需要提供column参数")
         if column not in df.columns:
-            return DataProcessResponse(
-                status="error",
-                message=f"列{column}不存在",
-                error_details=f"可用列: {list(df.columns)}"
-            )
+            raise ValueError(f"列{column}不存在")
         
         df = df.sort_values(by=column, ascending=ascending)
-        df.to_csv(request.output_path, index=False)
         
-        order_text = "升序" if ascending else "降序"
-        return DataProcessResponse(
-            status="success",
-            message=f"已按'{column}'进行{order_text}排序",
-            output_file=request.output_path
-        )
+        # 自动生成output_path
+        sort_order = "asc" if ascending else "desc"
+        output_path = params.ensure_output_path(f"_sorted_{column}_{sort_order}")
+        
+        df.to_csv(output_path, index=False)
+        return {
+            "status": "success",
+            "message": "已完成排序",
+            "output_file": output_path
+        }
     except Exception as e:
-        return DataProcessResponse(
-            status="error",
-            message="排序处理失败",
-            error_details=str(e)
-        )
+        return {
+            "status": "error",
+            "message": f"排序处理失败{str(e)}"
+        }
