@@ -336,8 +336,8 @@ def aggregate_column(params: UnifiedToolParams) -> dict:
         df = pd.read_csv(params.file_path)
 
         group_by = params.get_param('group_by')
-        target_column = params.get_param('target_column')
-        agg_func = params.get_param('agg_func')
+        target_column = params.get_param('target_column')  # 不聚合的列
+        agg_func = params.get_param('agg_func')  # 聚合的列
 
         if not group_by:
             raise ValueError("需要提供 group_by 参数")
@@ -346,33 +346,37 @@ def aggregate_column(params: UnifiedToolParams) -> dict:
         if isinstance(group_by, str):
             group_by = [g.strip() for g in group_by.split(",")]
 
-        # 如果指定了聚合函数 → 正常 groupby + 聚合
-        if agg_func:
-            if not target_column:
-                raise ValueError("使用聚合时需要提供 target_column")
+        # 构建聚合规则字典
+        agg_dict = {}
 
+        # target_column → 用 "first" 保留
+        if target_column:
             if isinstance(target_column, str):
                 target_column = [c.strip() for c in target_column.split(",")]
+            for col in target_column:
+                agg_dict[col] = "first"
 
+        # agg_func → 聚合规则
+        if agg_func:
             if isinstance(agg_func, str):
                 if agg_func not in ['sum', 'mean', 'max', 'min', 'count']:
                     raise ValueError("不支持的聚合函数")
-                agg_dict = {col:agg_func for col in target_column}
+                # 如果 target_column 为空，就报错（因为需要知道作用在哪些列）
+                if not target_column:
+                    raise ValueError("使用字符串形式的 agg_func 时必须提供 target_column")
+                for col in target_column:
+                    agg_dict[col] = agg_func
             elif isinstance(agg_func, dict):
-                agg_dict = agg_func
+                agg_dict.update(agg_func)
             else:
                 raise ValueError("agg_func 必须是字符串或字典")
 
-            result = df.groupby(group_by)[target_column].agg(agg_dict).reset_index()
-
+        # 执行分组聚合
+        if not agg_dict:
+            # 没有任何聚合规则 → 只返回分组唯一组合
+            result = df[group_by].drop_duplicates()
         else:
-            # 没有指定聚合函数 → 只分组，不聚合
-            if target_column:
-                # 返回分组 + 指定列的唯一组合
-                result = df[group_by + [target_column]].drop_duplicates()
-            else:
-                # 返回分组键的唯一组合
-                result = df[group_by].drop_duplicates()
+            result = df.groupby(group_by).agg(agg_dict).reset_index()
 
         # 自动生成输出路径
         output_path = params.ensure_output_path("_aggregate")
@@ -380,7 +384,7 @@ def aggregate_column(params: UnifiedToolParams) -> dict:
 
         return {
             "status":"success",
-            "message":"已完成 aggregate 操作" + (" + 聚合" if agg_func else " (未聚合)"),
+            "message":"已完成 aggregate 操作" + (" + 聚合" if agg_func else " (未聚合，仅输出分组和列)"),
             "output_file":output_path
         }
     except Exception as e:
