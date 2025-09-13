@@ -1,12 +1,18 @@
-from config import CONSUL_HOST, CONSUL_PORT, SERVICE_NAME, SEARXNG_URL
+from config import CONSUL_HOST, CONSUL_PORT, SERVICE_NAME, SEARXNG_URL, SHARED_DIR
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from consul_utils import register_service, deregister_service
 from enum import Enum
 import httpx
-from typing import Optional
+from typing import Optional, Dict, Any
+from hdfs import InsecureClient
 import consul
+import time
+import subprocess
+import shutil
 import socket
+import glob
+import uuid
 import os
 import atexit
 import requests
@@ -29,7 +35,7 @@ MODEL_TO_APIKEY = {
 }
 
 dify_url = "http://10.92.64.224/v1/chat-messages"
-remote_rul = "http://10.92.64.224:8003/files/"
+remote_rul = "http://10.92.64.224:8003/files"
 
 
 class ChatRequest(BaseModel):
@@ -248,7 +254,9 @@ async def get_model(request: ChatRequest):
     )
 
 # 数据处理部分调用大模型
-async def call_dify_tool(model: str, prompt: str, file_path: str, output_path: Optional[str] = None, user_id: Optional[str] = "defaultid", conversation_id: Optional[str] = None) -> str:
+async def call_dify_tool(model: str, prompt: str, file_path: str, output_path: Optional[str] = None,
+                         user_id: Optional[str] = "defaultid", conversation_id: Optional[str] = None) -> Dict[
+    str, Any]:
     api_key = MODEL_TO_APIKEY.get(model)
 
     if not api_key:
@@ -259,19 +267,40 @@ async def call_dify_tool(model: str, prompt: str, file_path: str, output_path: O
         "Content-Type": "application/json"
     }
 
-    filename = os.path.basename(file_path)
+    # 1️⃣ 构造 get_file URL
+    file_url = f"{remote_rul}?path={file_path}"
+
+    # 2️⃣ 下载 HDFS 文件内容到本地
+    try:
+        resp = requests.get(file_url)
+        resp.raise_for_status()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"[文件下载失败] 无法通过 get_file 下载: {e}")
+
+    # 保存到本地
+    basename = os.path.basename(file_path)
+    short_uuid = str(uuid.uuid4())[:8]
+    local_file_path = os.path.join(SHARED_DIR, f"{short_uuid}_{basename}")
+    with open(local_file_path, "wb") as f:
+        f.write(resp.content)
+
+    # 对输出文件同样处理
+    base, ext = os.path.splitext(os.path.basename(output_path))
+    local_output_path = os.path.join(SHARED_DIR, f"{short_uuid}_{base}_output{ext}")
+
+    local_file_url = f"http://10.92.64.224:8003/local_files/{os.path.basename(local_file_path)}"
 
     data = {
         "inputs": {
-            "file_path": file_path,
-            "output_path": output_path,
+            "file_path": local_file_path,
+            "output_path": local_output_path
         },
         "query": prompt,
         "files": [
             {
                 "type": "document",
-                "transfer_method": "remote_url",
-                "url": f"{remote_rul}{filename}"
+                "transfer_method": "remote_url",  # 直接传内容
+                "url": local_file_url
             }
         ],
         "response_mode": "blocking",
@@ -292,17 +321,20 @@ async def call_dify_tool(model: str, prompt: str, file_path: str, output_path: O
                 raise HTTPException(status_code=504, detail="[Dify错误]模型响应超时，稍后再试")
 
             try:
-                result = resp.json()  # 只在成功时赋值
+                result = resp.json()
             except Exception as e:
                 raise HTTPException(status_code=502, detail=f"[响应格式错误]无法解析JSON:{e}\n原始响应:{resp.text}")
 
             if "answer" in result:
-                return result["answer"]
+                return {
+                    "answer": result["answer"],
+                    "input_file": local_file_path,
+                    "output_file": local_output_path
+                }
             elif "message" in result:
                 raise HTTPException(status_code=502, detail=f"[Dify错误] {result['message']}")
             else:
                 raise HTTPException(status_code=502, detail="[Dify响应格式异常]")
-
 
     except httpx.ReadTimeout:
         raise HTTPException(status_code=504, detail="[超时] Dify 响应超时")
@@ -321,24 +353,21 @@ async def execute_data_process(request: DataProcessRequest) -> DataProcessRespon
     """
     try:
         # 检查输入文件是否存在
-        if not os.path.exists(request.file_path):
-            return DataProcessResponse(
-                status="error",
-                answer="输入文件不存在",
-                error_details=f"文件路径: {request.file_path}"
-            )
+        clear_temp_dir(SHARED_DIR, remove_subdirs=False)
+        if request.file_path.startswith("hdfs://"):
+            hdfs_prefix = "hdfs://bdap-cluster-01:8020"
+            hdfs_path = request.file_path.replace(hdfs_prefix, "")
 
-        # 如果没有指定输出路径，自动生成
-        if not request.output_path:
-            base_name = os.path.splitext(request.file_path)[0]
-            request.output_path = f"{base_name}_output.csv"
+            client = InsecureClient("http://10.92.64.241:9870", user="hdfs")
 
-        # 确保输出目录存在
-        output_dir = os.path.dirname(request.output_path)
-        if output_dir and not os.path.exists(output_dir):
-            os.makedirs(output_dir, exist_ok=True)
+            if not client.status(hdfs_path, strict=False):
+                return DataProcessResponse(
+                    status="error",
+                    answer="输入文件不存在（HDFS）",
+                    error_details=f"文件路径: {request.file_path}"
+                )
 
-        answer = await call_dify_tool(
+        result = await call_dify_tool(
             request.model,
             request.user_prompt,
             request.file_path,
@@ -346,9 +375,14 @@ async def execute_data_process(request: DataProcessRequest) -> DataProcessRespon
             request.user_id
         )
 
+        local_input_path = result["input_file"]
+        local_output_path = result["output_file"]
+        save_output_to_hdfs(local_input_path,local_output_path, request.output_path)
+        clear_temp_dir(SHARED_DIR, remove_subdirs=False)
+
         return DataProcessResponse(
             status="success",
-            answer=answer
+            answer=result["answer"],
         )
 
     except Exception as e:
@@ -358,6 +392,84 @@ async def execute_data_process(request: DataProcessRequest) -> DataProcessRespon
             answer="处理过程中发生错误",
             error_details=f"{repr(e)}\n{tb}"
         )
+
+
+def save_output_to_hdfs(local_input_path: str, local_output_path: str, hdfs_output_path: str, max_retries: int = 5, retry_interval: int = 2):
+    """
+    将本地文件上传到指定 HDFS 路径，并清理本地文件
+    - 只有上传成功才删除本地文件
+    - 上传失败会重试，直到 max_retries 次
+    """
+    # 1️⃣ 解析 hdfs://host:port 前缀
+    hdfs_prefix = "hdfs://bdap-cluster-01:8020"
+    if not hdfs_output_path.startswith(hdfs_prefix):
+        raise HTTPException(status_code=400, detail=f"HDFS路径必须以 {hdfs_prefix} 开头")
+
+    hdfs_path = hdfs_output_path.replace(hdfs_prefix, "")
+    if not hdfs_path.startswith("/"):
+        hdfs_path = "/" + hdfs_path
+
+    # 2️⃣ 确保父目录存在
+    try:
+        subprocess.run(
+            ["hdfs", "dfs", "-mkdir", "-p", os.path.dirname(hdfs_path)],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
+        )
+    except subprocess.CalledProcessError as e:
+        raise HTTPException(status_code=500, detail=f"HDFS创建目录失败: {e.stderr.decode() if e.stderr else str(e)}")
+
+    # 3️⃣ 上传文件，失败则重试
+    success = False
+    for attempt in range(1, max_retries + 1):
+        try:
+            subprocess.run(
+                ["hdfs", "dfs", "-put", "-f", local_output_path, hdfs_path],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+            success = True
+            print(f"✅ 已上传到 HDFS: {hdfs_output_path}")
+            break
+        except subprocess.CalledProcessError as e:
+            print(f"⚠️ 上传HDFS失败，重试 {attempt}/{max_retries}，错误: {e.stderr.decode() if e.stderr else str(e)}")
+            time.sleep(retry_interval)
+
+    if not success:
+        raise HTTPException(status_code=500, detail=f"HDFS上传失败，已尝试 {max_retries} 次: {hdfs_output_path}")
+
+    # 4️⃣ 上传成功后删除本地临时文件
+    for file_path in [local_input_path, local_output_path]:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+            print(f"🗑️ 已删除本地文件: {file_path}")
+
+
+def clear_temp_dir(dir_path: str, remove_subdirs: bool = False):
+    """
+    清理指定目录下的文件和可选的子目录
+
+    Args:
+        dir_path (str): 要清理的目录路径
+        remove_subdirs (bool): 是否删除子目录及其内容，默认 False
+    """
+    if not os.path.exists(dir_path):
+        print(f"⚠ 目录不存在: {dir_path}")
+        return
+
+    for file_path in glob.glob(os.path.join(dir_path, "*")):
+        try:
+            if os.path.isfile(file_path):
+                os.remove(file_path)
+                print(f"🗑️ 已删除临时文件: {file_path}")
+            elif os.path.isdir(file_path) and remove_subdirs:
+                shutil.rmtree(file_path)
+                print(f"🗑️ 已删除子目录及内容: {file_path}")
+        except Exception as e:
+            print(f"⚠ 删除 {file_path} 失败: {e}")
+
 
 
 if __name__ == "__main__":
@@ -372,4 +484,3 @@ if __name__ == "__main__":
 
     SERVICE_PORT = 8000
     uvicorn.run(app, host="0.0.0.0", port=SERVICE_PORT)
-
