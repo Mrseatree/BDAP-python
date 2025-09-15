@@ -2,7 +2,7 @@ import fastapi
 from fastapi import FastAPI
 from consul_utils import register_service, deregister_service
 from config import SERVICE_NAME
-from typing import Optional, Union, Any
+from typing import Optional, Union, Any, List
 from pydantic import BaseModel
 import atexit
 import os
@@ -13,7 +13,7 @@ app = FastAPI()
 
 # 统一的参数模型
 class UnifiedToolParams(BaseModel):
-    file_path: str
+    file_paths: List[str]
     output_path: Optional[str] = None  # 改为可选
     # 使用字符串来存储动态参数，然后转换为字典
     params: Optional[str] = "{}"
@@ -30,6 +30,12 @@ class UnifiedToolParams(BaseModel):
     agg_func: Optional[str] = None
     ascending: Optional[bool] = True
     constant_value: Optional[Union[str, int, float]] = None
+    # 指定连接操作的左外连接、右外连接、全外连接、内连接模式
+    # 以及显示指定列名
+    join_mode: Optional[str] = "inner"  # inner/left/right/outer
+    on: Optional[str] = None
+    left_on: Optional[str] = None
+    right_on: Optional[str] = None
 
     def _parse_params(self) -> dict:
         """将字符串形式的params转换为字典"""
@@ -100,7 +106,7 @@ async def health_check():
 def drop_empty_rows(params: UnifiedToolParams) -> dict:
     import pandas as pd
     try:
-        df = pd.read_csv(params.file_path)
+        df = pd.read_csv(params.file_paths[0])
         cleaned_df = df.dropna()
 
         # 自动生成output_path
@@ -123,7 +129,7 @@ def drop_empty_rows(params: UnifiedToolParams) -> dict:
 def fill_missing_with_mean(params: UnifiedToolParams) -> dict:
     import pandas as pd
     try:
-        df = pd.read_csv(params.file_path)
+        df = pd.read_csv(params.file_paths[0])
         df = df.fillna(df.mean(numeric_only = True))
 
         # 自动生成output_path
@@ -146,7 +152,7 @@ def fill_missing_with_mean(params: UnifiedToolParams) -> dict:
 def fill_missing_with_median(params: UnifiedToolParams) -> dict:
     import pandas as pd
     try:
-        df = pd.read_csv(params.file_path)
+        df = pd.read_csv(params.file_paths[0])
         df = df.fillna(df.median(numeric_only = True))
 
         # 自动生成output_path
@@ -169,7 +175,7 @@ def fill_missing_with_median(params: UnifiedToolParams) -> dict:
 def fill_missing_with_constant(params: UnifiedToolParams) -> dict:
     import pandas as pd
     try:
-        df = pd.read_csv(params.file_path)
+        df = pd.read_csv(params.file_paths[0])
         constant_value = params.get_param('constant_value') or params.get_param('value')
         if constant_value is None:
             raise ValueError("需要提供constant_value或value参数")
@@ -196,7 +202,7 @@ def fill_missing_with_constant(params: UnifiedToolParams) -> dict:
 def fill_missing_with_mode(params: UnifiedToolParams) -> dict:
     import pandas as pd
     try:
-        df = pd.read_csv(params.file_path)
+        df = pd.read_csv(params.file_paths[0])
         df = df.fillna(df.mode().iloc[0])
 
         # 自动生成output_path
@@ -219,7 +225,7 @@ def fill_missing_with_mode(params: UnifiedToolParams) -> dict:
 def filter_by_column(params: UnifiedToolParams) -> dict:
     import pandas as pd
     try:
-        df = pd.read_csv(params.file_path)
+        df = pd.read_csv(params.file_paths[0])
         column = params.get_param('column')
         condition = params.get_param('condition')
         value = params.get_param('value')
@@ -262,7 +268,7 @@ def filter_by_column(params: UnifiedToolParams) -> dict:
 def rename_column(params: UnifiedToolParams) -> dict:
     import pandas as pd
     try:
-        df = pd.read_csv(params.file_path)
+        df = pd.read_csv(params.file_paths[0])
         old_name = params.get_param('old_name')
         new_name = params.get_param('new_name')
 
@@ -293,7 +299,7 @@ def rename_column(params: UnifiedToolParams) -> dict:
 def convert_column_type(params: UnifiedToolParams) -> dict:
     import pandas as pd
     try:
-        df = pd.read_csv(params.file_path)
+        df = pd.read_csv(params.file_paths[0])
         column = params.get_param('column')
         target_type = params.get_param('target_type')
 
@@ -333,7 +339,7 @@ def convert_column_type(params: UnifiedToolParams) -> dict:
 def aggregate_column(params: UnifiedToolParams) -> dict:
     import pandas as pd
     try:
-        df = pd.read_csv(params.file_path)
+        df = pd.read_csv(params.file_paths[0])
 
         group_by = params.get_param('group_by')
         target_column = params.get_param('target_column')  # 不聚合的列
@@ -398,7 +404,7 @@ def aggregate_column(params: UnifiedToolParams) -> dict:
 def sort_by_column(params: UnifiedToolParams) -> dict:
     import pandas as pd
     try:
-        df = pd.read_csv(params.file_path)
+        df = pd.read_csv(params.file_paths[0])
         column = params.get_param('column')
         ascending = params.get_param('ascending', True)
 
@@ -423,4 +429,37 @@ def sort_by_column(params: UnifiedToolParams) -> dict:
         return {
             "status":"error",
             "message":f"排序处理失败{str(e)}"
+        }
+
+
+@app.post("/tools/join_tables")
+def join_tables(params: UnifiedToolParams) -> dict:
+    import pandas as pd
+    try:
+        if len(params.file_paths) != 2:
+            raise ValueError("join操作需要提供两个文件路径")
+        df1 = pd.read_csv(params.file_paths[0])
+        df2 = pd.read_csv(params.file_paths[1])
+        how = params.join_mode
+
+        if how and how not in ["left", "right", "outer", "inner"]:
+            raise ValueError("连接模式不合法")
+
+        if params.on:
+            result = pd.merge(df1, df2, how = how, on = params.on)
+        elif params.left_on:
+            result = pd.merge(df1, df2, how = how, left_on = params.left_on, right_on = params.right_on)
+
+        output_path = params.ensure_output_path("_joined")
+        result.to_csv(output_path, index = False)
+
+        return {
+            "status":"success",
+            "message":f"已完成 {how} join 操作",
+            "output_file":output_path
+        }
+    except Exception as e:
+        return {
+            "status":"error",
+            "message":f"join 处理失败: {str(e)}"
         }
