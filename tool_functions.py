@@ -78,11 +78,11 @@ class UnifiedToolParams(BaseModel):
             raise ValueError("文件内容不得为空")
 
     def check_multi_files(self, max_files = 2):
-        if not self.file_contents:
+        if not self.file_content:
             raise ValueError("文件内容不得为空")
-        if len(self.file_contents) < 2:
+        if len(self.file_content) < 2:
             raise ValueError("需要至少两个文件内容")
-        if len(self.file_contents) > max_files:
+        if len(self.file_content) > max_files:
             raise ValueError(f"文件过多，最多支持 {max_files} 个")
 
 
@@ -469,8 +469,8 @@ def sort_by_column(params: UnifiedToolParams) -> dict:
 def join_tables(params: UnifiedToolParams) -> dict:
     import pandas as pd
     try:
-        if len(params.file_paths) != 2:
-            raise ValueError("join操作需要提供两个文件路径")
+        # if len(params.file_paths) != 2:
+        #     raise ValueError("join操作需要提供两个文件路径")
         # df1 = pd.read_csv(params.file_paths[0])
         # df2 = pd.read_csv(params.file_paths[1])
         params.check_multi_files()
