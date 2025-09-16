@@ -13,7 +13,9 @@ app = FastAPI()
 
 # 统一的参数模型
 class UnifiedToolParams(BaseModel):
-    file_paths: List[str]
+    # file_paths: List[str]
+    # 考虑将文件以JSON格式直接传入
+    file_content: List[str]
     output_path: Optional[str] = None  # 改为可选
     # 使用字符串来存储动态参数，然后转换为字典
     params: Optional[str] = "{}"
@@ -71,6 +73,18 @@ class UnifiedToolParams(BaseModel):
 
         return self.output_path
 
+    def check_single_file(self):
+        if not self.file_content:
+            raise ValueError("文件内容不得为空")
+
+    def check_multi_files(self, max_files = 2):
+        if not self.file_contents:
+            raise ValueError("文件内容不得为空")
+        if len(self.file_contents) < 2:
+            raise ValueError("需要至少两个文件内容")
+        if len(self.file_contents) > max_files:
+            raise ValueError(f"文件过多，最多支持 {max_files} 个")
+
 
 # 添加服务启动和关闭事件
 @app.on_event("startup")
@@ -106,7 +120,9 @@ async def health_check():
 def drop_empty_rows(params: UnifiedToolParams) -> dict:
     import pandas as pd
     try:
-        df = pd.read_csv(params.file_paths[0])
+        # df = pd.read_csv(params.file_paths[0])
+        params.check_single_file()
+        df = pd.DataFrame.from_records(json.loads(params.file_content[0]))
         cleaned_df = df.dropna()
 
         # 自动生成output_path
@@ -129,7 +145,9 @@ def drop_empty_rows(params: UnifiedToolParams) -> dict:
 def fill_missing_with_mean(params: UnifiedToolParams) -> dict:
     import pandas as pd
     try:
-        df = pd.read_csv(params.file_paths[0])
+        # df = pd.read_csv(params.file_paths[0])
+        params.check_single_file()
+        df = pd.DataFrame.from_records(json.loads(params.file_content[0]))
         df = df.fillna(df.mean(numeric_only = True))
 
         # 自动生成output_path
@@ -152,7 +170,9 @@ def fill_missing_with_mean(params: UnifiedToolParams) -> dict:
 def fill_missing_with_median(params: UnifiedToolParams) -> dict:
     import pandas as pd
     try:
-        df = pd.read_csv(params.file_paths[0])
+        # df = pd.read_csv(params.file_paths[0])
+        params.check_single_file()
+        df = pd.DataFrame.from_records(json.loads(params.file_content[0]))
         df = df.fillna(df.median(numeric_only = True))
 
         # 自动生成output_path
@@ -175,7 +195,9 @@ def fill_missing_with_median(params: UnifiedToolParams) -> dict:
 def fill_missing_with_constant(params: UnifiedToolParams) -> dict:
     import pandas as pd
     try:
-        df = pd.read_csv(params.file_paths[0])
+        # df = pd.read_csv(params.file_paths[0])
+        params.check_single_file()
+        df = pd.DataFrame.from_records(json.loads(params.file_content[0]))
         constant_value = params.get_param('constant_value') or params.get_param('value')
         if constant_value is None:
             raise ValueError("需要提供constant_value或value参数")
@@ -202,7 +224,9 @@ def fill_missing_with_constant(params: UnifiedToolParams) -> dict:
 def fill_missing_with_mode(params: UnifiedToolParams) -> dict:
     import pandas as pd
     try:
-        df = pd.read_csv(params.file_paths[0])
+        # df = pd.read_csv(params.file_paths[0])
+        params.check_single_file()
+        df = pd.DataFrame.from_records(json.loads(params.file_content[0]))
         df = df.fillna(df.mode().iloc[0])
 
         # 自动生成output_path
@@ -225,7 +249,9 @@ def fill_missing_with_mode(params: UnifiedToolParams) -> dict:
 def filter_by_column(params: UnifiedToolParams) -> dict:
     import pandas as pd
     try:
-        df = pd.read_csv(params.file_paths[0])
+        # df = pd.read_csv(params.file_paths[0])
+        params.check_single_file()
+        df = pd.DataFrame.from_records(json.loads(params.file_content[0]))
         column = params.get_param('column')
         condition = params.get_param('condition')
         value = params.get_param('value')
@@ -268,7 +294,9 @@ def filter_by_column(params: UnifiedToolParams) -> dict:
 def rename_column(params: UnifiedToolParams) -> dict:
     import pandas as pd
     try:
-        df = pd.read_csv(params.file_paths[0])
+        # df = pd.read_csv(params.file_paths[0])
+        params.check_single_file()
+        df = pd.DataFrame.from_records(json.loads(params.file_content[0]))
         old_name = params.get_param('old_name')
         new_name = params.get_param('new_name')
 
@@ -299,7 +327,9 @@ def rename_column(params: UnifiedToolParams) -> dict:
 def convert_column_type(params: UnifiedToolParams) -> dict:
     import pandas as pd
     try:
-        df = pd.read_csv(params.file_paths[0])
+        # df = pd.read_csv(params.file_paths[0])
+        params.check_single_file()
+        df = pd.DataFrame.from_records(json.loads(params.file_content[0]))
         column = params.get_param('column')
         target_type = params.get_param('target_type')
 
@@ -339,8 +369,9 @@ def convert_column_type(params: UnifiedToolParams) -> dict:
 def aggregate_column(params: UnifiedToolParams) -> dict:
     import pandas as pd
     try:
-        df = pd.read_csv(params.file_paths[0])
-
+        # df = pd.read_csv(params.file_paths[0])
+        params.check_single_file()
+        df = pd.DataFrame.from_records(json.loads(params.file_content[0]))
         group_by = params.get_param('group_by')
         target_column = params.get_param('target_column')  # 不聚合的列
         agg_func = params.get_param('agg_func')  # 聚合的列
@@ -404,7 +435,9 @@ def aggregate_column(params: UnifiedToolParams) -> dict:
 def sort_by_column(params: UnifiedToolParams) -> dict:
     import pandas as pd
     try:
-        df = pd.read_csv(params.file_paths[0])
+        # df = pd.read_csv(params.file_paths[0])
+        params.check_single_file()
+        df = pd.DataFrame.from_records(json.loads(params.file_content[0]))
         column = params.get_param('column')
         ascending = params.get_param('ascending', True)
 
@@ -438,13 +471,17 @@ def join_tables(params: UnifiedToolParams) -> dict:
     try:
         if len(params.file_paths) != 2:
             raise ValueError("join操作需要提供两个文件路径")
-        df1 = pd.read_csv(params.file_paths[0])
-        df2 = pd.read_csv(params.file_paths[1])
+        # df1 = pd.read_csv(params.file_paths[0])
+        # df2 = pd.read_csv(params.file_paths[1])
+        params.check_multi_files()
+        df1 = pd.DataFrame.from_records(json.loads(params.file_content[0]))
+        df2 = pd.DataFrame.from_records(json.loads(params.file_content[1]))
         how = params.join_mode
 
         if how and how not in ["left", "right", "outer", "inner"]:
             raise ValueError("连接模式不合法")
 
+        result = []
         if params.on:
             result = pd.merge(df1, df2, how = how, on = params.on)
         elif params.left_on:
