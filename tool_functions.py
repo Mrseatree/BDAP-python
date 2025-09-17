@@ -16,7 +16,7 @@ class UnifiedToolParams(BaseModel):
     # file_paths: List[str]
     # 考虑将文件以JSON格式直接传入
     file_content: List[str]
-    output_path: Optional[str] = None  # 改为可选
+    # output_path: Optional[str] = None  # 改为可选
     # 使用字符串来存储动态参数，然后转换为字典
     params: Optional[str] = "{}"
 
@@ -126,13 +126,14 @@ def drop_empty_rows(params: UnifiedToolParams) -> dict:
         cleaned_df = df.dropna()
 
         # 自动生成output_path
-        output_path = params.ensure_output_path("_no_empty_rows")
+        # output_path = params.ensure_output_path("_no_empty_rows")
 
-        cleaned_df.to_csv(output_path, index = False)
+        # cleaned_df.to_csv(output_path, index = False)
         return {
             "status":"success",
             "message":"已删除所有空白行",
-            "output_file":output_path
+            "output_data":cleaned_df.to_dict(orient = "records")
+            # "output_file":output_path
         }
     except Exception as e:
         return {
@@ -151,13 +152,14 @@ def fill_missing_with_mean(params: UnifiedToolParams) -> dict:
         df = df.fillna(df.mean(numeric_only = True))
 
         # 自动生成output_path
-        output_path = params.ensure_output_path("_filled_mean")
+        # output_path = params.ensure_output_path("_filled_mean")
 
-        df.to_csv(output_path, index = False)
+        # df.to_csv(output_path, index = False)
         return {
             "status":"success",
             "message":"已使用平均值填补缺失值",
-            "output_file":output_path
+            "output_data":df.to_dict(orient = "records")
+            # "output_file":output_path
         }
     except Exception as e:
         return {
@@ -176,13 +178,14 @@ def fill_missing_with_median(params: UnifiedToolParams) -> dict:
         df = df.fillna(df.median(numeric_only = True))
 
         # 自动生成output_path
-        output_path = params.ensure_output_path("_filled_median")
+        # output_path = params.ensure_output_path("_filled_median")
 
-        df.to_csv(output_path, index = False)
+        # df.to_csv(output_path, index = False)
         return {
             "status":"success",
             "message":"已使用中位数填补缺失值",
-            "output_file":output_path
+            # "output_file":output_path
+            "output_data":df.to_dict(orient = "records")
         }
     except Exception as e:
         return {
@@ -205,13 +208,14 @@ def fill_missing_with_constant(params: UnifiedToolParams) -> dict:
         df = df.fillna(constant_value)
 
         # 自动生成output_path
-        output_path = params.ensure_output_path("_filled_constant")
+        # output_path = params.ensure_output_path("_filled_constant")
 
-        df.to_csv(output_path, index = False)
+        # df.to_csv(output_path, index = False)
         return {
             "status":"success",
             "message":"已使用常数填补缺失值",
-            "output_file":output_path
+            # "output_file":output_path
+            "output_data":df.to_dict(orient = "records")
         }
     except Exception as e:
         return {
@@ -230,13 +234,14 @@ def fill_missing_with_mode(params: UnifiedToolParams) -> dict:
         df = df.fillna(df.mode().iloc[0])
 
         # 自动生成output_path
-        output_path = params.ensure_output_path("_filled_mode")
+        # output_path = params.ensure_output_path("_filled_mode")
 
-        df.to_csv(output_path, index = False)
+        # df.to_csv(output_path, index = False)
         return {
             "status":"success",
             "message":"已使用众数填补缺失值",
-            "output_file":output_path
+            # "output_file":output_path
+            "output_data":df.to_dict(orient = "records")
         }
     except Exception as e:
         return {
@@ -275,13 +280,14 @@ def filter_by_column(params: UnifiedToolParams) -> dict:
             raise ValueError("不支持的条件")
 
         # 自动生成output_path
-        output_path = params.ensure_output_path(f"_filtered_{column}_{condition}_{value}")
+        # output_path = params.ensure_output_path(f"_filtered_{column}_{condition}_{value}")
 
-        df.to_csv(output_path, index = False)
+        # df.to_csv(output_path, index = False)
         return {
             "status":"success",
             "message":"已完成筛选",
-            "output_file":output_path
+            # "output_file":output_path
+            "output_data":df.to_dict(orient = "records")
         }
     except Exception as e:
         return {
@@ -308,13 +314,14 @@ def rename_column(params: UnifiedToolParams) -> dict:
         df = df.rename(columns = {old_name:new_name})
 
         # 自动生成output_path
-        output_path = params.ensure_output_path(f"_renamed_{old_name}_to_{new_name}")
+        # output_path = params.ensure_output_path(f"_renamed_{old_name}_to_{new_name}")
 
-        df.to_csv(output_path, index = False)
+        # df.to_csv(output_path, index = False)
         return {
             "status":"success",
             "message":"已完成重命名",
-            "output_file":output_path
+            # "output_file":output_path
+            "output_data":df.to_dict(orient = "records")
         }
     except Exception as e:
         return {
@@ -350,13 +357,14 @@ def convert_column_type(params: UnifiedToolParams) -> dict:
             raise ValueError("不支持的目标类型")
 
         # 自动生成output_path
-        output_path = params.ensure_output_path(f"_converted_{column}_to_{target_type}")
+        # output_path = params.ensure_output_path(f"_converted_{column}_to_{target_type}")
 
-        df.to_csv(output_path, index = False)
+        # df.to_csv(output_path, index = False)
         return {
             "status":"success",
             "message":"已完成类型转换",
-            "output_file":output_path
+            # "output_file":output_path
+            "output_data":df.to_dict(orient = "records")
         }
     except Exception as e:
         return {
@@ -416,13 +424,14 @@ def aggregate_column(params: UnifiedToolParams) -> dict:
             result = df.groupby(group_by).agg(agg_dict).reset_index()
 
         # 自动生成输出路径
-        output_path = params.ensure_output_path("_aggregate")
-        result.to_csv(output_path, index = False)
+        # output_path = params.ensure_output_path("_aggregate")
+        # result.to_csv(output_path, index = False)
 
         return {
             "status":"success",
             "message":"已完成 aggregate 操作" + (" + 聚合" if agg_func else " (未聚合，仅输出分组和列)"),
-            "output_file":output_path
+            # "output_file":output_path
+            "output_data":result.to_dict(orient = "records")
         }
     except Exception as e:
         return {
@@ -450,13 +459,14 @@ def sort_by_column(params: UnifiedToolParams) -> dict:
 
         # 自动生成output_path
         sort_order = "asc" if ascending else "desc"
-        output_path = params.ensure_output_path(f"_sorted_{column}_{sort_order}")
+        # output_path = params.ensure_output_path(f"_sorted_{column}_{sort_order}")
 
-        df.to_csv(output_path, index = False)
+        # df.to_csv(output_path, index = False)
         return {
             "status":"success",
             "message":"已完成排序",
-            "output_file":output_path
+            # "output_file":output_path
+            "output_data":df.to_dict(orient = "records")
         }
     except Exception as e:
         return {
@@ -487,13 +497,14 @@ def join_tables(params: UnifiedToolParams) -> dict:
         elif params.left_on:
             result = pd.merge(df1, df2, how = how, left_on = params.left_on, right_on = params.right_on)
 
-        output_path = params.ensure_output_path("_joined")
-        result.to_csv(output_path, index = False)
+        # output_path = params.ensure_output_path("_joined")
+        # result.to_csv(output_path, index = False)
 
         return {
             "status":"success",
             "message":f"已完成 {how} join 操作",
-            "output_file":output_path
+            # "output_file":output_path
+            "output_data":result.to_dict(orient = "records")
         }
     except Exception as e:
         return {
