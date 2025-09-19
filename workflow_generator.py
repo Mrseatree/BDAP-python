@@ -37,6 +37,9 @@ class WorkflowResult(BaseModel):
     nodes: Optional[List[Dict[str, Any]]] = None
     error_message: Optional[str] = None
 
+# 用于存储工作流结果的内存缓存
+workflow_results_cache: Dict[str, WorkflowResult] = {}
+
 # 更新后的模型定义
 class WorkflowInfo(BaseModel):
     userId: str
@@ -53,16 +56,20 @@ class ComplicatedAttribute(BaseModel):
 class SourceAnchor(BaseModel):
     nodeName: str
     nodeMark: int
+    seq: int = 0  # 新增序号字段
 
 class TargetAnchor(BaseModel):
     nodeName: str
     nodeMark: int
+    seq: int = 0  # 新增序号字段
 
 class InputAnchor(BaseModel):
+    seq: int = 0  # 新增锚点序号
     numOfConnectedEdges: int = 0
     sourceAnchor: Optional[SourceAnchor] = None
 
 class OutputAnchor(BaseModel):
+    seq: int = 0  # 新增锚点序号
     numOfConnectedEdges: int = 0
     targetAnchors: List[TargetAnchor] = []
 
@@ -132,37 +139,52 @@ async def process_workflow_generation(request: WorkflowGenerationRequest):
         
         if sanitized_workflow is None:
             # 发送失败结果给Java
-            await send_result_to_java(WorkflowResult(
+            error_result = WorkflowResult(
                 requestId=request.requestId,
                 status="error",
                 error_message=f"工作流结构校验失败: {', '.join(errors)}"
-            ))
+            )
+            
+            # 缓存失败结果用于测试接口
+            workflow_results_cache[request.requestId] = error_result
+            
+            await send_result_to_java(error_result)
             return
         
         if warnings:
             print(f"工作流校验警告: {', '.join(warnings)}")
         
         # 4. 发送成功结果给Java
-        await send_result_to_java(WorkflowResult(
+        result = WorkflowResult(
             requestId=request.requestId,
             status="success",
             conversation_id=new_conversation_id,
             workflow_info=sanitized_workflow["workflow_info"],
             nodes=sanitized_workflow["nodes"]
-        ))
+        )
+        
+        # 缓存结果用于测试接口
+        workflow_results_cache[request.requestId] = result
+        
+        await send_result_to_java(result)
         
     except Exception as e:
         # 发送失败结果给Java
-        await send_result_to_java(WorkflowResult(
+        error_result = WorkflowResult(
             requestId=request.requestId,
             status="error",
             error_message=f"工作流生成失败: {str(e)}"
-        ))
+        )
+        
+        # 缓存失败结果用于测试接口
+        workflow_results_cache[request.requestId] = error_result
+        
+        await send_result_to_java(error_result)
 
 async def send_result_to_java(result: WorkflowResult):
     try:
-        #工作流回调接口？？
-        callback_url = "http://localhost:7003/llm/workflow/update"
+        #工作流回调接口
+        callback_url = "http://localhost:7003/llm/result/experiment"
         
         headers = {
             "Content-Type": "application/json"
@@ -319,31 +341,44 @@ def parse_llm_response(llm_response: Any, user_id: str, service_type: str, reque
                 if not isinstance(node["outputAnchors"], list):
                     node["outputAnchors"] = []
                 
-                # 处理inputAnchors
-                for input_anchor in node["inputAnchors"]:
+                # 处理inputAnchors - 适配新格式
+                for j, input_anchor in enumerate(node["inputAnchors"]):
                     if isinstance(input_anchor, dict):
+                        # 添加seq字段
+                        input_anchor.setdefault("seq", j)
                         input_anchor.setdefault("numOfConnectedEdges", 0)
+                        
+                        # 处理旧格式的sourceAnchors转换为新格式的sourceAnchor
                         if "sourceAnchors" in input_anchor and input_anchor["sourceAnchors"]:
                             if len(input_anchor["sourceAnchors"]) > 0:
                                 old_source = input_anchor["sourceAnchors"][0]
                                 input_anchor["sourceAnchor"] = {
                                     "nodeName": old_source.get("nodeName", ""),
-                                    "nodeMark": old_source.get("nodeMark", 0)
+                                    "nodeMark": old_source.get("nodeMark", 0),
+                                    "seq": old_source.get("seq", 0)  # 添加seq字段
                                 }
                             # 移除旧字段
                             input_anchor.pop("sourceAnchors", None)
+                        
+                        # 确保sourceAnchor包含seq字段
+                        if "sourceAnchor" in input_anchor and input_anchor["sourceAnchor"]:
+                            if "seq" not in input_anchor["sourceAnchor"]:
+                                input_anchor["sourceAnchor"]["seq"] = 0
                 
-                # 处理outputAnchors
-                for output_anchor in node["outputAnchors"]:
+                # 处理outputAnchors - 适配新格式
+                for j, output_anchor in enumerate(node["outputAnchors"]):
                     if isinstance(output_anchor, dict):
+                        # 添加seq字段
+                        output_anchor.setdefault("seq", j)
                         output_anchor.setdefault("numOfConnectedEdges", 0)
                         output_anchor.setdefault("targetAnchors", [])
                         
-                        # 确保targetAnchors中的每个元素都有正确的格式
-                        for target_anchor in output_anchor["targetAnchors"]:
+                        # 确保targetAnchors中的每个元素都有正确的格式和seq字段
+                        for k, target_anchor in enumerate(output_anchor["targetAnchors"]):
                             if isinstance(target_anchor, dict):
                                 target_anchor.setdefault("nodeName", "")
                                 target_anchor.setdefault("nodeMark", 0)
+                                target_anchor.setdefault("seq", k)  # 添加seq字段
             
             return workflow_data
         else:
@@ -357,6 +392,21 @@ def parse_llm_response(llm_response: Any, user_id: str, service_type: str, reque
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "service": "workflow_generator"}
+
+@app.get("/workflow/result/{request_id}")
+async def get_workflow_result(request_id: str):
+    """获取工作流生成结果"""
+    if request_id not in workflow_results_cache:
+        raise HTTPException(status_code=404, detail=f"未找到请求ID为 {request_id} 的工作流结果")
+    
+    return workflow_results_cache[request_id]
+
+@app.delete("/workflow/results")
+async def clear_all_workflow_results():
+    """清空所有工作流结果缓存（用于测试）"""
+    count = len(workflow_results_cache)
+    workflow_results_cache.clear()
+    return {"message": f"已清空所有工作流结果缓存，共删除 {count} 条记录"}
 
 if __name__ == "__main__":
     import uvicorn
