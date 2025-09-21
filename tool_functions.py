@@ -586,48 +586,66 @@ def sort_by_column(params: UnifiedToolParams) -> dict:
 @app.post("/tools/join_tables")
 def join_tables(params: UnifiedToolParams) -> dict:
     import pandas as pd
+    import json
     try:
-        # if len(params.file_paths) != 2:
-        #     raise ValueError("join操作需要提供两个文件路径")
-        # df1 = pd.read_csv(params.file_paths[0])
-        # df2 = pd.read_csv(params.file_paths[1])
+        # 1. 读取文件内容
         params.check_multi_files()
-        raw1 = params.file_content1
-        raw2 = params.file_content2
 
-        data1 = json.loads(raw1)
-        data2 = json.loads(raw2)
-
-        if isinstance(data1, str):
-            data1 = json.loads(raw1)
-
-        if isinstance(data2, str):
-            data2 = json.loads(raw2)
+        data1 = parse_file_content(params.file_content1)
+        data2 = parse_file_content(params.file_content2)
 
         df1 = pd.DataFrame.from_records(data1)
         df2 = pd.DataFrame.from_records(data2)
-        how = params.join_mode
 
-        if how and how not in ["left", "right", "outer", "inner"]:
+        # 2. 解析 join 参数（兼容 string / dict）
+        extra_params = {}
+        if hasattr(params, "params") and params.params:
+            if isinstance(params.params, str):
+                try:
+                    # Dify 可能多一层转义，所以解析两次
+                    extra_params = json.loads(params.params)
+                    if isinstance(extra_params, str):
+                        extra_params = json.loads(extra_params)
+                except Exception as e:git
+                    return {"status": "error", "message": f"params 解析失败: {e}"}
+            elif isinstance(params.params, dict):
+                extra_params = params.params
+
+        # 取连接键
+        on = extra_params.get("on")
+        left_on = extra_params.get("left_on")
+        right_on = extra_params.get("right_on")
+        how = extra_params.get("join_mode", "inner")
+
+        if how not in ["left", "right", "outer", "inner"]:
             raise ValueError("连接模式不合法")
 
-        result = []
-        if params.on:
-            result = pd.merge(df1, df2, how = how, on = params.on)
-        elif params.left_on:
-            result = pd.merge(df1, df2, how = how, left_on = params.left_on, right_on = params.right_on)
-
-        # output_path = params.ensure_output_path("_joined")
-        # result.to_csv(output_path, index = False)
+        # 4. 执行 merge
+        if on:
+            result = pd.merge(df1, df2, how=how, on=on)
+        elif left_on and right_on:
+            result = pd.merge(df1, df2, how=how, left_on=left_on, right_on=right_on)
+        else:
+            raise ValueError("必须指定连接键 on 或 left_on/right_on")
 
         return {
-            "status":"success",
-            "message":f"已完成 {how} join 操作",
-            # "output_file":output_path
-            "output_data":result.to_dict(orient = "records")
+            "status": "success",
+            "message": f"已完成 {how} join 操作",
+            "output_data": result.to_dict(orient="records")
         }
     except Exception as e:
         return {
-            "status":"error",
-            "message":f"join 处理失败: {str(e)}"
+            "status": "error",
+            "message": f"join 处理失败: {str(e)}"
         }
+
+
+def parse_file_content(file_content):
+    if isinstance(file_content, str):
+        # 第一次解析
+        file_content = json.loads(file_content)
+        # 第二次解析，如果仍然是 str
+        if isinstance(file_content, str):
+            file_content = json.loads(file_content)
+    return file_content
+
