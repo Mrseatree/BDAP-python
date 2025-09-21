@@ -323,20 +323,7 @@ async def call_dify_with_tools(model: str, query: str, data_dict: Dict[str, List
 # 统一的数据处理接口
 @app.post("/data-process/execute", response_model=DataProcessResponse)
 async def execute_data_process(request: Dict[str, Any]) -> DataProcessResponse:
-    """
-    统一的数据处理接口
-    大模型会在Dify中自动选择合适的工具函数处理数据
-    
-    请求格式:
-    {
-        "model": "model_name",
-        "query": "用户需求描述",  // 改为query
-        "user_id": "用户ID",  // 可选，有默认值
-        "data0": [{"col1": "value1", "col2": "value2"}, ...],  # 第一个数据集
-        "data1": [{"col1": "value1", "col2": "value2"}, ...],  # 第二个数据集（可选）
-        ...
-    }
-    """
+
     try:
         # 提取基本参数
         model = request.get("model")
@@ -378,13 +365,54 @@ async def execute_data_process(request: Dict[str, Any]) -> DataProcessResponse:
             user_id=user_id  # 现在有默认值
         )
 
-        # Dify的工具函数会自动处理数据并返回结果
-        # 大模型会根据工具函数的返回结果生成最终回答
+        # 解析answer中的JSON数据作为处理结果
+        answer = result.get("answer", "")
+        parsed_result = None
+        
+        print(f"=== 解析answer调试信息 ===")
+        print(f"原始answer: {answer}")
+        print(f"answer类型: {type(answer)}")
+        print(f"answer长度: {len(answer) if answer else 0}")
+        
+        try:
+            # 尝试将answer解析为JSON数据
+            if answer and answer.strip():
+                stripped_answer = answer.strip()
+                print(f"去空格后的answer: {stripped_answer}")
+                print(f"是否以[开头: {stripped_answer.startswith('[')}")
+                print(f"是否以]结尾: {stripped_answer.endswith(']')}")
+                
+                # 检查是否是JSON数组格式
+                if stripped_answer.startswith('[') and stripped_answer.endswith(']'):
+                    parsed_result = json.loads(stripped_answer)
+                    print(f"成功解析为数组: {len(parsed_result)} 条记录")
+                    print(f"解析结果类型: {type(parsed_result)}")
+                elif stripped_answer.startswith('{') and stripped_answer.endswith('}'):
+                    # 单个对象也转换为列表
+                    single_obj = json.loads(stripped_answer)
+                    parsed_result = [single_obj]
+                    print(f"成功解析为单个对象并转换为数组")
+                else:
+                    print(f"answer不是标准JSON格式，内容: {stripped_answer[:200]}...")
+            else:
+                print("answer为空或只有空格")
+                
+        except json.JSONDecodeError as e:
+            print(f"JSON解析失败: {e}")
+            print(f"失败的内容: {answer[:500]}...")
+        except Exception as e:
+            print(f"处理answer时出现其他错误: {e}")
+            import traceback
+            print(f"错误堆栈: {traceback.format_exc()}")
+
+        print(f"最终parsed_result: {parsed_result}")
+        print(f"parsed_result类型: {type(parsed_result)}")
+        print("=== 解析调试信息结束 ===")
+
         return DataProcessResponse(
             status="success",
-            answer=result.get("answer"),
-            # 注意: 实际的处理结果数据需要从answer中解析
-            # 或者根据具体的Dify工具函数返回格式来调整
+            answer=answer,
+            result=parsed_result  # 解析后的数据结果
         )
 
     except Exception as e:
