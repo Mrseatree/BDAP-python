@@ -11,15 +11,12 @@ import json
 app = FastAPI()
 
 
-# 统一的参数模型
+# 统一的参数模型（增强版本）
 class UnifiedToolParams(BaseModel):
-    # file_paths: List[str]
-    # 考虑将文件以JSON格式直接传入
-    # file_content: List[str]
-    # 考虑将文件以JSON格式传入并使用str结构
+    # 文件内容字段
     file_content1: str = None
     file_content2: str = None
-    # output_path: Optional[str] = None  # 改为可选
+    
     # 使用字符串来存储动态参数，然后转换为字典
     params: Optional[str] = "{}"
 
@@ -35,12 +32,17 @@ class UnifiedToolParams(BaseModel):
     agg_func: Optional[str] = None
     ascending: Optional[bool] = True
     constant_value: Optional[Union[str, int, float]] = None
-    # 指定连接操作的左外连接、右外连接、全外连接、内连接模式
-    # 以及显示指定列名
+    
+    # 连接操作参数 - 设置默认值避免验证失败
     join_mode: Optional[str] = "inner"  # inner/left/right/outer
     on: Optional[str] = None
     left_on: Optional[str] = None
     right_on: Optional[str] = None
+    
+    # 添加更多可能的参数名称，让Dify更容易传参
+    join_column: Optional[str] = None  # 别名for on
+    connect_on: Optional[str] = None   # 别名for on
+    merge_on: Optional[str] = None     # 别名for on
 
     def _parse_params(self) -> dict:
         """将字符串形式的params转换为字典"""
@@ -63,18 +65,27 @@ class UnifiedToolParams(BaseModel):
         params_dict = self._parse_params()
         return params_dict.get(key, default)
 
-    # def ensure_output_path(self, suffix: str = "_processed"):
-    #     """确保output_path存在，如果没有则自动生成"""
-    #     if not self.output_path:
-    #         base_name = os.path.splitext(self.file_path)[0]
-    #         self.output_path = f"{base_name}{suffix}.csv"
-    #
-    #     # 确保输出目录存在
-    #     output_dir = os.path.dirname(self.output_path)
-    #     if output_dir and not os.path.exists(output_dir):
-    #         os.makedirs(output_dir, exist_ok = True)
-    #
-    #     return self.output_path
+    def get_join_column(self):
+        """获取连接字段，尝试多个可能的参数名"""
+        # 按优先级尝试不同的参数名
+        candidates = [
+            self.on,
+            self.join_column, 
+            self.connect_on,
+            self.merge_on,
+            self.get_param('on'),
+            self.get_param('join_column'),
+            self.get_param('connect_on'),
+            self.get_param('merge_on'),
+            self.get_param('id'),  # 常见的连接字段
+            self.get_param('key'),
+            self.get_param('join_key')
+        ]
+        
+        for candidate in candidates:
+            if candidate:
+                return candidate
+        return None
 
     def check_single_file(self):
         if not self.file_content1:
@@ -82,12 +93,9 @@ class UnifiedToolParams(BaseModel):
 
     def check_multi_files(self, max_files = 2):
         if not self.file_content1:
-            raise ValueError("文件内容不得为空")
+            raise ValueError("文件内容1不得为空")
         if not self.file_content2:
-        # if len(self.file_content) < 2:
-            raise ValueError("需要至少两个文件内容")
-        # if len(self.file_content) > max_files:
-        #     raise ValueError(f"文件过多，最多支持 {max_files} 个")
+            raise ValueError("文件内容2不得为空")
 
 
 # 添加服务启动和关闭事件
@@ -124,32 +132,21 @@ async def health_check():
 def drop_empty_rows(params: UnifiedToolParams) -> dict:
     import pandas as pd
     try:
-        # df = pd.read_csv(params.file_paths[0])
         params.check_single_file()
         raw = params.file_content1
-        #print("raw:", raw, type(raw))
 
         data = json.loads(raw)
-        #print("after 1st loads:", data, type(data))
-
         # 如果还是 str，再转第二次
         if isinstance(data, str):
             data = json.loads(data)
 
-        #print("final data:", data, type(data))
         df = pd.DataFrame.from_records(data)
-        #print("DataFrame:\n", df)
         cleaned_df = df.dropna()
 
-        # 自动生成output_path
-        # output_path = params.ensure_output_path("_no_empty_rows")
-
-        # cleaned_df.to_csv(output_path, index = False)
         return {
             "status":"success",
             "message":"已删除所有空白行",
             "output_data":cleaned_df.to_dict(orient = "records")
-            # "output_file":output_path
         }
     except Exception as e:
         return {
@@ -162,31 +159,20 @@ def drop_empty_rows(params: UnifiedToolParams) -> dict:
 def fill_missing_with_mean(params: UnifiedToolParams) -> dict:
     import pandas as pd
     try:
-        # df = pd.read_csv(params.file_paths[0])
         params.check_single_file()
         raw = params.file_content1
-        # print("raw:", raw, type(raw))
 
         data = json.loads(raw)
-        # print("after 1st loads:", data, type(data))
-
-        # 如果还是 str，再转第二次
         if isinstance(data, str):
             data = json.loads(data)
 
-        # print("final data:", data, type(data))
         df = pd.DataFrame.from_records(data)
         df = df.fillna(df.mean(numeric_only = True))
 
-        # 自动生成output_path
-        # output_path = params.ensure_output_path("_filled_mean")
-
-        # df.to_csv(output_path, index = False)
         return {
             "status":"success",
             "message":"已使用平均值填补缺失值",
             "output_data":df.to_dict(orient = "records")
-            # "output_file":output_path
         }
     except Exception as e:
         return {
@@ -199,30 +185,19 @@ def fill_missing_with_mean(params: UnifiedToolParams) -> dict:
 def fill_missing_with_median(params: UnifiedToolParams) -> dict:
     import pandas as pd
     try:
-        # df = pd.read_csv(params.file_paths[0])
         params.check_single_file()
         raw = params.file_content1
-        # print("raw:", raw, type(raw))
 
         data = json.loads(raw)
-        # print("after 1st loads:", data, type(data))
-
-        # 如果还是 str，再转第二次
         if isinstance(data, str):
             data = json.loads(data)
 
-        # print("final data:", data, type(data))
         df = pd.DataFrame.from_records(data)
         df = df.fillna(df.median(numeric_only = True))
 
-        # 自动生成output_path
-        # output_path = params.ensure_output_path("_filled_median")
-
-        # df.to_csv(output_path, index = False)
         return {
             "status":"success",
             "message":"已使用中位数填补缺失值",
-            # "output_file":output_path
             "output_data":df.to_dict(orient = "records")
         }
     except Exception as e:
@@ -238,16 +213,11 @@ def fill_missing_with_constant(params: UnifiedToolParams) -> dict:
     try:
         params.check_single_file()
         raw = params.file_content1
-        # print("raw:", raw, type(raw))
 
         data = json.loads(raw)
-        # print("after 1st loads:", data, type(data))
-
-        # 如果还是 str，再转第二次
         if isinstance(data, str):
             data = json.loads(data)
 
-        # print("final data:", data, type(data))
         df = pd.DataFrame.from_records(data)
         constant_value = params.get_param('constant_value') or params.get_param('value')
         if constant_value is None:
@@ -255,14 +225,9 @@ def fill_missing_with_constant(params: UnifiedToolParams) -> dict:
 
         df = df.fillna(constant_value)
 
-        # 自动生成output_path
-        # output_path = params.ensure_output_path("_filled_constant")
-
-        # df.to_csv(output_path, index = False)
         return {
             "status":"success",
             "message":"已使用常数填补缺失值",
-            # "output_file":output_path
             "output_data":df.to_dict(orient = "records")
         }
     except Exception as e:
@@ -278,27 +243,17 @@ def fill_missing_with_mode(params: UnifiedToolParams) -> dict:
     try:
         params.check_single_file()
         raw = params.file_content1
-        # print("raw:", raw, type(raw))
 
         data = json.loads(raw)
-        # print("after 1st loads:", data, type(data))
-
-        # 如果还是 str，再转第二次
         if isinstance(data, str):
             data = json.loads(data)
 
-        # print("final data:", data, type(data))
         df = pd.DataFrame.from_records(data)
         df = df.fillna(df.mode().iloc[0])
 
-        # 自动生成output_path
-        # output_path = params.ensure_output_path("_filled_mode")
-
-        # df.to_csv(output_path, index = False)
         return {
             "status":"success",
             "message":"已使用众数填补缺失值",
-            # "output_file":output_path
             "output_data":df.to_dict(orient = "records")
         }
     except Exception as e:
@@ -314,16 +269,11 @@ def filter_by_column(params: UnifiedToolParams) -> dict:
     try:
         params.check_single_file()
         raw = params.file_content1
-        # print("raw:", raw, type(raw))
 
         data = json.loads(raw)
-        # print("after 1st loads:", data, type(data))
-
-        # 如果还是 str，再转第二次
         if isinstance(data, str):
             data = json.loads(data)
 
-        # print("final data:", data, type(data))
         df = pd.DataFrame.from_records(data)
         column = params.get_param('column')
         condition = params.get_param('condition')
@@ -347,14 +297,9 @@ def filter_by_column(params: UnifiedToolParams) -> dict:
         else:
             raise ValueError("不支持的条件")
 
-        # 自动生成output_path
-        # output_path = params.ensure_output_path(f"_filtered_{column}_{condition}_{value}")
-
-        # df.to_csv(output_path, index = False)
         return {
             "status":"success",
             "message":"已完成筛选",
-            # "output_file":output_path
             "output_data":df.to_dict(orient = "records")
         }
     except Exception as e:
@@ -370,16 +315,11 @@ def rename_column(params: UnifiedToolParams) -> dict:
     try:
         params.check_single_file()
         raw = params.file_content1
-        # print("raw:", raw, type(raw))
 
         data = json.loads(raw)
-        # print("after 1st loads:", data, type(data))
-
-        # 如果还是 str，再转第二次
         if isinstance(data, str):
             data = json.loads(data)
 
-        # print("final data:", data, type(data))
         df = pd.DataFrame.from_records(data)
         old_name = params.get_param('old_name')
         new_name = params.get_param('new_name')
@@ -391,14 +331,9 @@ def rename_column(params: UnifiedToolParams) -> dict:
 
         df = df.rename(columns = {old_name:new_name})
 
-        # 自动生成output_path
-        # output_path = params.ensure_output_path(f"_renamed_{old_name}_to_{new_name}")
-
-        # df.to_csv(output_path, index = False)
         return {
             "status":"success",
             "message":"已完成重命名",
-            # "output_file":output_path
             "output_data":df.to_dict(orient = "records")
         }
     except Exception as e:
@@ -414,16 +349,11 @@ def convert_column_type(params: UnifiedToolParams) -> dict:
     try:
         params.check_single_file()
         raw = params.file_content1
-        # print("raw:", raw, type(raw))
 
         data = json.loads(raw)
-        # print("after 1st loads:", data, type(data))
-
-        # 如果还是 str，再转第二次
         if isinstance(data, str):
             data = json.loads(data)
 
-        # print("final data:", data, type(data))
         df = pd.DataFrame.from_records(data)
         column = params.get_param('column')
         target_type = params.get_param('target_type')
@@ -444,14 +374,9 @@ def convert_column_type(params: UnifiedToolParams) -> dict:
         else:
             raise ValueError("不支持的目标类型")
 
-        # 自动生成output_path
-        # output_path = params.ensure_output_path(f"_converted_{column}_to_{target_type}")
-
-        # df.to_csv(output_path, index = False)
         return {
             "status":"success",
             "message":"已完成类型转换",
-            # "output_file":output_path
             "output_data":df.to_dict(orient = "records")
         }
     except Exception as e:
@@ -467,16 +392,11 @@ def aggregate_column(params: UnifiedToolParams) -> dict:
     try:
         params.check_single_file()
         raw = params.file_content1
-        # print("raw:", raw, type(raw))
 
         data = json.loads(raw)
-        # print("after 1st loads:", data, type(data))
-
-        # 如果还是 str，再转第二次
         if isinstance(data, str):
             data = json.loads(data)
 
-        # print("final data:", data, type(data))
         df = pd.DataFrame.from_records(data)
         group_by = params.get_param('group_by')
         target_column = params.get_param('target_column')  # 不聚合的列
@@ -521,14 +441,9 @@ def aggregate_column(params: UnifiedToolParams) -> dict:
         else:
             result = df.groupby(group_by).agg(agg_dict).reset_index()
 
-        # 自动生成输出路径
-        # output_path = params.ensure_output_path("_aggregate")
-        # result.to_csv(output_path, index = False)
-
         return {
             "status":"success",
             "message":"已完成 aggregate 操作" + (" + 聚合" if agg_func else " (未聚合，仅输出分组和列)"),
-            # "output_file":output_path
             "output_data":result.to_dict(orient = "records")
         }
     except Exception as e:
@@ -544,16 +459,11 @@ def sort_by_column(params: UnifiedToolParams) -> dict:
     try:
         params.check_single_file()
         raw = params.file_content1
-        # print("raw:", raw, type(raw))
 
         data = json.loads(raw)
-        # print("after 1st loads:", data, type(data))
-
-        # 如果还是 str，再转第二次
         if isinstance(data, str):
             data = json.loads(data)
 
-        # print("final data:", data, type(data))
         df = pd.DataFrame.from_records(data)
         column = params.get_param('column')
         ascending = params.get_param('ascending', True)
@@ -565,15 +475,9 @@ def sort_by_column(params: UnifiedToolParams) -> dict:
 
         df = df.sort_values(by = column, ascending = ascending)
 
-        # 自动生成output_path
-        sort_order = "asc" if ascending else "desc"
-        # output_path = params.ensure_output_path(f"_sorted_{column}_{sort_order}")
-
-        # df.to_csv(output_path, index = False)
         return {
             "status":"success",
             "message":"已完成排序",
-            # "output_file":output_path
             "output_data":df.to_dict(orient = "records")
         }
     except Exception as e:
@@ -587,47 +491,119 @@ def sort_by_column(params: UnifiedToolParams) -> dict:
 def join_tables(params: UnifiedToolParams) -> dict:
     import pandas as pd
     try:
-        # if len(params.file_paths) != 2:
-        #     raise ValueError("join操作需要提供两个文件路径")
-        # df1 = pd.read_csv(params.file_paths[0])
-        # df2 = pd.read_csv(params.file_paths[1])
+        # 检查必需的两个数据集
         params.check_multi_files()
         raw1 = params.file_content1
         raw2 = params.file_content2
 
+        print(f"=== join_tables调试信息开始 ===")
+        print(f"接收到的参数:")
+        print(f"- file_content1 长度: {len(raw1) if raw1 else 0}")
+        print(f"- file_content2 长度: {len(raw2) if raw2 else 0}")
+        print(f"- join_mode: {params.join_mode}")
+        print(f"- on: {params.on}")
+        print(f"- join_column: {params.join_column}")
+        print(f"- left_on: {params.left_on}")
+        print(f"- right_on: {params.right_on}")
+        
+        # 解析数据
         data1 = json.loads(raw1)
         data2 = json.loads(raw2)
 
+        # 处理可能的双重JSON编码
         if isinstance(data1, str):
-            data1 = json.loads(raw1)
-
+            data1 = json.loads(data1)
         if isinstance(data2, str):
-            data2 = json.loads(raw2)
+            data2 = json.loads(data2)
 
         df1 = pd.DataFrame.from_records(data1)
         df2 = pd.DataFrame.from_records(data2)
-        how = params.join_mode
+        
+        print(f"- df1 shape: {df1.shape}, columns: {list(df1.columns)}")
+        print(f"- df2 shape: {df2.shape}, columns: {list(df2.columns)}")
+        
+        # 获取连接模式，默认为inner
+        how = params.join_mode or "inner"
+        if how not in ["left", "right", "outer", "inner"]:
+            raise ValueError("连接模式不合法，支持: inner, left, right, outer")
 
-        if how and how not in ["left", "right", "outer", "inner"]:
-            raise ValueError("连接模式不合法")
+        # 获取连接字段 - 使用增强的方法
+        on_field = params.get_join_column()
+        left_on_field = params.left_on or params.get_param('left_on')
+        right_on_field = params.right_on or params.get_param('right_on')
 
-        result = []
-        if params.on:
-            result = pd.merge(df1, df2, how = how, on = params.on)
-        elif params.left_on:
-            result = pd.merge(df1, df2, how = how, left_on = params.left_on, right_on = params.right_on)
+        print(f"- 解析后的连接字段:")
+        print(f"  - on_field: {on_field}")
+        print(f"  - left_on_field: {left_on_field}")
+        print(f"  - right_on_field: {right_on_field}")
 
-        # output_path = params.ensure_output_path("_joined")
-        # result.to_csv(output_path, index = False)
+        # 执行连接操作
+        result = None
+        
+        if on_field:
+            # 使用相同的列名连接
+            if on_field not in df1.columns:
+                raise ValueError(f"左表中不存在列 '{on_field}', 可用列: {list(df1.columns)}")
+            if on_field not in df2.columns:
+                raise ValueError(f"右表中不存在列 '{on_field}', 可用列: {list(df2.columns)}")
+            
+            print(f"- 使用字段 '{on_field}' 进行 {how} 连接")
+            result = pd.merge(df1, df2, how=how, on=on_field)
+            
+        elif left_on_field and right_on_field:
+            # 使用不同的列名连接
+            if left_on_field not in df1.columns:
+                raise ValueError(f"左表中不存在列 '{left_on_field}', 可用列: {list(df1.columns)}")
+            if right_on_field not in df2.columns:
+                raise ValueError(f"右表中不存在列 '{right_on_field}', 可用列: {list(df2.columns)}")
+            
+            print(f"- 使用 left_on='{left_on_field}', right_on='{right_on_field}' 进行 {how} 连接")
+            result = pd.merge(df1, df2, how=how, left_on=left_on_field, right_on=right_on_field)
+            
+        else:
+            # 如果没有指定连接字段，尝试自动找到共同列
+            common_cols = list(set(df1.columns) & set(df2.columns))
+            print(f"- 共同列: {common_cols}")
+            
+            if not common_cols:
+                raise ValueError(
+                    f"未指定连接字段且两表没有共同列名。\n"
+                    f"左表列: {list(df1.columns)}\n"
+                    f"右表列: {list(df2.columns)}\n"
+                    f"请在查询中明确指定连接字段，例如：'按照id字段连接'"
+                )
+            
+            # 使用第一个共同列（优先选择id相关的列）
+            auto_on = common_cols[0]
+            for col in common_cols:
+                if 'id' in col.lower():
+                    auto_on = col
+                    break
+                    
+            print(f"- 自动选择连接字段: '{auto_on}' (从共同列中选择)")
+            result = pd.merge(df1, df2, how=how, on=auto_on)
+
+        print(f"- 连接结果: {result.shape}, columns: {list(result.columns)}")
+        print("=== join_tables调试信息结束 ===")
 
         return {
-            "status":"success",
-            "message":f"已完成 {how} join 操作",
-            # "output_file":output_path
-            "output_data":result.to_dict(orient = "records")
+            "status": "success",
+            "message": f"已完成 {how} join 操作，结果包含 {len(result)} 行 {len(result.columns)} 列数据",
+            "output_data": result.to_dict(orient="records")
         }
+        
     except Exception as e:
+        print(f"join_tables 错误: {str(e)}")
+        import traceback
+        error_trace = traceback.format_exc()
+        print(f"错误堆栈: {error_trace}")
+        
         return {
-            "status":"error",
-            "message":f"join 处理失败: {str(e)}"
+            "status": "error",
+            "message": f"join 处理失败: {str(e)}"
         }
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8002)
