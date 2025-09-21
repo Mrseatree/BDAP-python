@@ -56,20 +56,20 @@ class ComplicatedAttribute(BaseModel):
 class SourceAnchor(BaseModel):
     nodeName: str
     nodeMark: int
-    seq: int = 0  # 新增序号字段
+    seq: int = 0
 
 class TargetAnchor(BaseModel):
     nodeName: str
     nodeMark: int
-    seq: int = 0  # 新增序号字段
+    seq: int = 0
 
 class InputAnchor(BaseModel):
-    seq: int = 0  # 新增锚点序号
+    seq: int = 0
     numOfConnectedEdges: int = 0
     sourceAnchor: Optional[SourceAnchor] = None
 
 class OutputAnchor(BaseModel):
-    seq: int = 0  # 新增锚点序号
+    seq: int = 0
     numOfConnectedEdges: int = 0
     targetAnchors: List[TargetAnchor] = []
 
@@ -316,7 +316,7 @@ def parse_llm_response(llm_response: Any, user_id: str, service_type: str, reque
                     node["id"] = f"node_{i}"
                 
                 if "mark" not in node:
-                    node["mark"] = node.get("id", f"node_{i}")
+                    node["mark"] = str(i)  # 使用字符串类型的mark
                 
                 if "position" not in node:
                     node["position"] = [100 + i * 200, 100]
@@ -341,29 +341,35 @@ def parse_llm_response(llm_response: Any, user_id: str, service_type: str, reque
                 if not isinstance(node["outputAnchors"], list):
                     node["outputAnchors"] = []
                 
-                # 处理inputAnchors - 适配新格式
+                # 处理inputAnchors
                 for j, input_anchor in enumerate(node["inputAnchors"]):
                     if isinstance(input_anchor, dict):
                         # 添加seq字段
                         input_anchor.setdefault("seq", j)
                         input_anchor.setdefault("numOfConnectedEdges", 0)
                         
-                        # 处理旧格式的sourceAnchors转换为新格式的sourceAnchor
+                        # 从sourceAnchors转换为sourceAnchor
                         if "sourceAnchors" in input_anchor and input_anchor["sourceAnchors"]:
-                            if len(input_anchor["sourceAnchors"]) > 0:
+                            if isinstance(input_anchor["sourceAnchors"], list) and len(input_anchor["sourceAnchors"]) > 0:
                                 old_source = input_anchor["sourceAnchors"][0]
                                 input_anchor["sourceAnchor"] = {
-                                    "nodeName": old_source.get("nodeName", ""),
-                                    "nodeMark": old_source.get("nodeMark", 0),
-                                    "seq": old_source.get("seq", 0)  # 添加seq字段
+                                    "nodeName": old_source.get("nodeName", old_source.get("id", "")),
+                                    "nodeMark": old_source.get("nodeMark", old_source.get("mark", 0)),
+                                    "seq": old_source.get("seq", 0)
                                 }
                             # 移除旧字段
                             input_anchor.pop("sourceAnchors", None)
                         
-                        # 确保sourceAnchor包含seq字段
+                        # 确保sourceAnchor包含所有必需字段
                         if "sourceAnchor" in input_anchor and input_anchor["sourceAnchor"]:
-                            if "seq" not in input_anchor["sourceAnchor"]:
-                                input_anchor["sourceAnchor"]["seq"] = 0
+                            source_anchor = input_anchor["sourceAnchor"]
+                            source_anchor.setdefault("seq", 0)
+                            # 确保nodeMark是整数类型
+                            if "nodeMark" in source_anchor:
+                                try:
+                                    source_anchor["nodeMark"] = int(source_anchor["nodeMark"])
+                                except (ValueError, TypeError):
+                                    source_anchor["nodeMark"] = 0
                 
                 # 处理outputAnchors - 适配新格式
                 for j, output_anchor in enumerate(node["outputAnchors"]):
@@ -376,9 +382,22 @@ def parse_llm_response(llm_response: Any, user_id: str, service_type: str, reque
                         # 确保targetAnchors中的每个元素都有正确的格式和seq字段
                         for k, target_anchor in enumerate(output_anchor["targetAnchors"]):
                             if isinstance(target_anchor, dict):
-                                target_anchor.setdefault("nodeName", "")
-                                target_anchor.setdefault("nodeMark", 0)
-                                target_anchor.setdefault("seq", k)  # 添加seq字段
+                                target_anchor.setdefault("nodeName", target_anchor.get("id", ""))
+                                target_anchor.setdefault("seq", k)
+                                
+                                # 处理nodeMark字段，从mark字段转换或设置默认值
+                                if "nodeMark" not in target_anchor:
+                                    target_anchor["nodeMark"] = target_anchor.get("mark", 0)
+                                
+                                # 确保nodeMark是整数类型
+                                try:
+                                    target_anchor["nodeMark"] = int(target_anchor["nodeMark"])
+                                except (ValueError, TypeError):
+                                    target_anchor["nodeMark"] = 0
+                                
+                                # 移除旧的mark字段（如果存在）
+                                target_anchor.pop("mark", None)
+                                target_anchor.pop("id", None)  # 移除旧的id字段
             
             return workflow_data
         else:
@@ -395,7 +414,7 @@ async def health_check():
 
 @app.get("/workflow/result/{request_id}")
 async def get_workflow_result(request_id: str):
-    """获取工作流生成结果"""
+    """获取工作流生成结果（用于测试）"""
     if request_id not in workflow_results_cache:
         raise HTTPException(status_code=404, detail=f"未找到请求ID为 {request_id} 的工作流结果")
     
