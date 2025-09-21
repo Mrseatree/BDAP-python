@@ -241,7 +241,10 @@ async def get_model(request: ChatRequest):
 async def call_dify_with_tools(model: str, query: str, data_dict: Dict[str, List[Dict]], 
                                user_id: str = "default_user", 
                                conversation_id: Optional[str] = None) -> Dict[str, Any]:
-
+    """
+    调用配置了工具函数的Dify应用
+    Dify会根据用户需求自动选择合适的工具函数并调用
+    """
     api_key = MODEL_TO_APIKEY.get(model)
 
     if not api_key:
@@ -262,11 +265,12 @@ async def call_dify_with_tools(model: str, query: str, data_dict: Dict[str, List
         json_str = json.dumps(value, ensure_ascii=False)
         data_inputs[field_name] = json_str
 
+
     data = {
-        "query": query,  # 用户的处理需求描述
         "inputs": data_inputs,
-        "user": user_id,  # 现在有默认值，确保不为空
+        "query": query,  # 用户的处理需求描述
         "response_mode": "blocking",
+        "user": user_id,  # 现在有默认值，确保不为空
         "conversation_id": conversation_id
     }
 
@@ -316,9 +320,23 @@ async def call_dify_with_tools(model: str, query: str, data_dict: Dict[str, List
         tb = traceback.format_exc()
         raise HTTPException(status_code=500, detail=f"[未知错误] {repr(e)}\n{tb}")
 
-# 数据处理接口
+# 统一的数据处理接口
 @app.post("/data-process/execute", response_model=DataProcessResponse)
 async def execute_data_process(request: Dict[str, Any]) -> DataProcessResponse:
+    """
+    统一的数据处理接口
+    大模型会在Dify中自动选择合适的工具函数处理数据
+    
+    请求格式:
+    {
+        "model": "model_name",
+        "query": "用户需求描述",  // 改为query
+        "user_id": "用户ID",  // 可选，有默认值
+        "data0": [{"col1": "value1", "col2": "value2"}, ...],  # 第一个数据集
+        "data1": [{"col1": "value1", "col2": "value2"}, ...],  # 第二个数据集（可选）
+        ...
+    }
+    """
     try:
         # 提取基本参数
         model = request.get("model")
@@ -328,7 +346,7 @@ async def execute_data_process(request: Dict[str, Any]) -> DataProcessResponse:
         if not model or not query:
             return DataProcessResponse(
                 status="error",
-                error_details="缺少必要参数: model 和 query"
+                error_details="缺少必要参数: model 和 query"  # 改为query
             )
 
         # 提取数据字段 (data0, data1, data2, ...)
@@ -355,14 +373,18 @@ async def execute_data_process(request: Dict[str, Any]) -> DataProcessResponse:
         # 调用Dify，让大模型决策并调用工具函数
         result = await call_dify_with_tools(
             model=model,
-            query=query,  
+            query=query,  # 改为query
             data_dict=data_dict,
             user_id=user_id  # 现在有默认值
         )
 
+        # Dify的工具函数会自动处理数据并返回结果
+        # 大模型会根据工具函数的返回结果生成最终回答
         return DataProcessResponse(
             status="success",
             answer=result.get("answer"),
+            # 注意: 实际的处理结果数据需要从answer中解析
+            # 或者根据具体的Dify工具函数返回格式来调整
         )
 
     except Exception as e:
@@ -371,7 +393,6 @@ async def execute_data_process(request: Dict[str, Any]) -> DataProcessResponse:
             status="error",
             error_details=f"{repr(e)}\n{tb}"
         )
-
 if __name__ == "__main__":
     import uvicorn
 
