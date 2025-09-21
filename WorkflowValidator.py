@@ -11,7 +11,7 @@ class SimplifiedWorkflowValidator:
         self.max_nodes = max_nodes
         self.warnings = []
         self.errors = []
-        self.node_map = {}
+        self.node_map = {}  # 使用 mark 作为键
         self.components_config = loadComponentConfig("./component_whitelist.json")
 
     def sanitize(self, workflow_data: dict) -> Tuple[dict, List[str], List[str]]:
@@ -103,7 +103,7 @@ class SimplifiedWorkflowValidator:
 
     def _init_anchors(self, node: dict):
         """初始化锚点结构"""
-        # 输入锚点
+        # 输入锚点 - 新格式
         node.setdefault('inputAnchors', [])
         for anchor in node['inputAnchors']:
             anchor.setdefault('seq', 0)
@@ -122,7 +122,7 @@ class SimplifiedWorkflowValidator:
                 except (ValueError, TypeError):
                     source_anchor['nodeMark'] = 0
 
-        # 输出锚点
+        # 输出锚点 - 新格式
         node.setdefault('outputAnchors', [])
         for anchor in node['outputAnchors']:
             anchor.setdefault('seq', 0)
@@ -144,19 +144,25 @@ class SimplifiedWorkflowValidator:
         """验证连接关系"""
         node_mark = node.get('mark', '')
 
-        # 验证输入连接
+        # 验证输入连接 - 新格式
         for anchor in node['inputAnchors']:
             if 'sourceAnchor' in anchor and anchor['sourceAnchor']:
                 source_anchor = anchor['sourceAnchor']
                 source_mark = str(source_anchor.get('nodeMark', ''))
                 
-                if source_mark and source_mark not in self.node_map:
+                if source_mark and source_mark in self.node_map:
+                    anchor['numOfConnectedEdges'] = 1
+                elif source_mark:
                     self.warnings.append(f"节点 {node_mark} 引用了不存在的源节点: {source_mark}")
                     # 清除无效连接
                     anchor['sourceAnchor'] = None
                     anchor['numOfConnectedEdges'] = 0
+                else:
+                    anchor['numOfConnectedEdges'] = 0
+            else:
+                anchor['numOfConnectedEdges'] = 0
 
-        # 验证输出连接
+        # 验证输出连接 - 新格式
         for anchor in node['outputAnchors']:
             valid_targets = []
             
