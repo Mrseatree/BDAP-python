@@ -47,7 +47,7 @@ class ChatResponse(BaseModel):
     requestId: str
     conversation_id: Optional[str] = None # 默认为新对话
 
-# 数据处理请求模型
+# 数据处理请求模型 - 支持动态数据字段
 class DataProcessRequest(BaseModel):
     model: ModelName  # 模型名称
     user_prompt: str  # 用户需求描述
@@ -238,8 +238,8 @@ async def get_model(request: ChatRequest):
     )
 
 # 数据处理专用的Dify调用函数
-async def call_dify_with_tools(model: str, prompt: str, data_dict: Dict[str, List[Dict]], 
-                               user_id: Optional[str] = "defaultid", 
+async def call_dify_with_tools(model: str, query: str, data_dict: Dict[str, List[Dict]], 
+                               user_id: str = "default_user", 
                                conversation_id: Optional[str] = None) -> Dict[str, Any]:
 
     api_key = MODEL_TO_APIKEY.get(model)
@@ -252,21 +252,33 @@ async def call_dify_with_tools(model: str, prompt: str, data_dict: Dict[str, Lis
         "Content-Type": "application/json"
     }
 
-    # 将数据放入inputs中，供工具函数使用
+    # 将数据拆解为独立的file_content字段传给Dify
+    # Dify期望每个file_content都是独立的字符串字段
     data_inputs = {}
-    for key, value in data_dict.items():
-        data_inputs[f"{key}_content"] = json.dumps(value, ensure_ascii=False)
+    
+    # 为每个数据集创建独立的file_content字段
+    for i, (key, value) in enumerate(data_dict.items()):
+        field_name = f"file_content{i + 1}"  # file_content1, file_content2, ...
+        json_str = json.dumps(value, ensure_ascii=False)
+        data_inputs[field_name] = json_str
 
     data = {
-        "inputs": data_inputs,  # 数据通过inputs传递给工具函数
-        "query": prompt,
+        "query": query,  # 用户的处理需求描述
+        "inputs": data_inputs,
+        "user": user_id,  # 现在有默认值，确保不为空
         "response_mode": "blocking",
-        "user": user_id,
         "conversation_id": conversation_id
     }
 
     print("=== 调试信息 ===")
-    print("发送到Dify的数据:", json.dumps(data, ensure_ascii=False, indent=2))
+    print("发送到Dify的数据:")
+    print(f"- 数据集字段: {list(data_inputs.keys())}")
+    for i, (key, value) in enumerate(data_dict.items()):
+        data_length = len(value) if isinstance(value, list) else 0
+        field_name = f"file_content{i + 1}"
+        print(f"  - {field_name} ({key}): {data_length} 条记录")
+    print("- query:", query)
+    print("- user:", user_id)
     print("===============")
 
     timeout = httpx.Timeout(120.0, read=120.0, connect=10.0)
@@ -304,26 +316,30 @@ async def call_dify_with_tools(model: str, prompt: str, data_dict: Dict[str, Lis
         tb = traceback.format_exc()
         raise HTTPException(status_code=500, detail=f"[未知错误] {repr(e)}\n{tb}")
 
-# 统一的数据处理接口
+# 数据处理接口
 @app.post("/data-process/execute", response_model=DataProcessResponse)
 async def execute_data_process(request: Dict[str, Any]) -> DataProcessResponse:
-
     try:
         # 提取基本参数
         model = request.get("model")
-        user_prompt = request.get("user_prompt")
-        user_id = request.get("user_id", "defaultid")
+        query = request.get("query")  # 改为query
+        user_id = request.get("user_id", "default_user")  # 设置默认值
         
-        if not model or not user_prompt:
+        if not model or not query:
             return DataProcessResponse(
                 status="error",
-                error_details="缺少必要参数: model 和 user_prompt"
+                error_details="缺少必要参数: model 和 query"
             )
 
-        # 提取数据字段
+        # 提取数据字段 (data0, data1, data2, ...)
         data_dict = {}
         for key, value in request.items():
             if key.startswith('data') and key[4:].isdigit():
+                if not isinstance(value, list):
+                    return DataProcessResponse(
+                        status="error",
+                        error_details=f"数据字段 {key} 必须是列表格式"
+                    )
                 data_dict[key] = value
 
         if not data_dict:
@@ -334,20 +350,19 @@ async def execute_data_process(request: Dict[str, Any]) -> DataProcessResponse:
 
         print(f"接收到数据处理请求: {len(data_dict)} 个数据集")
         for key, value in data_dict.items():
-            print(f"- {key}: {len(value) if isinstance(value, list) else 'unknown'} 条记录")
+            print(f"- {key}: {len(value)} 条记录")
 
         # 调用Dify，让大模型决策并调用工具函数
         result = await call_dify_with_tools(
             model=model,
-            prompt=user_prompt,
+            query=query,  
             data_dict=data_dict,
-            user_id=user_id
+            user_id=user_id  # 现在有默认值
         )
-        
+
         return DataProcessResponse(
             status="success",
             answer=result.get("answer"),
-            # result字段需要根据实际工具函数返回格式来解析
         )
 
     except Exception as e:
