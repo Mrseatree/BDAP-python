@@ -228,7 +228,8 @@ async def call_dify_with_workflow(model: str, prompt: str, user_id: str, request
         data = {
             "inputs": {
                 "requestId": request_id,
-                "isWorkFlow": isWorkFlow
+                "isWorkFlow": isWorkFlow,
+                "file_content1": ""  # 添加默认的文件内容参数
             },
             "query": prompt,
             "response_mode": "blocking",
@@ -245,26 +246,32 @@ async def call_dify_with_workflow(model: str, prompt: str, user_id: str, request
             print("原始内容:", resp.text)
 
             if resp.status_code == 504:
-                raise HTTPException(status_code=504, detail="[Dify错误]模型响应超时，稍后再试")
+                raise ValueError("[Dify错误]模型响应超时，稍后再试")
+            
+            if resp.status_code != 200:
+                raise ValueError(f"[Dify API错误]状态码: {resp.status_code}, 响应: {resp.text}")
 
             try:
                 result = resp.json()
             except Exception as e:
-                raise HTTPException(status_code=502, detail=f"[响应格式错误]无法解析JSON:{e}\n原始响应:{resp.text}")
+                raise ValueError(f"[响应格式错误]无法解析JSON:{e}\n原始响应:{resp.text}")
 
             if "answer" in result:
                 return result["answer"], result.get("conversation_id")
             elif "message" in result:
-                raise HTTPException(status_code=502, detail=f"[Dify错误] {result['message']}")
+                # 直接抛出ValueError而不是HTTPException，便于上层捕获
+                raise ValueError(f"[Dify错误] {result['message']}")
             else:
-                raise HTTPException(status_code=502, detail="[Dify响应格式异常]")
+                raise ValueError("[Dify响应格式异常]")
 
     except httpx.ReadTimeout:
-        raise HTTPException(status_code=504, detail="[超时] Dify 响应超时")
+        raise ValueError("[超时] Dify 响应超时")
     except httpx.RequestError as e:
-        raise HTTPException(status_code=502, detail=f"[请求失败] {e}")
+        raise ValueError(f"[请求失败] {e}")
+    except HTTPException as e:
+        raise ValueError(f"[HTTP错误] {e.detail}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"[未知错误] {e}")
+        raise ValueError(f"[未知错误] {e}")
 
 def parse_llm_response(llm_response: Any, user_id: str, service_type: str, request_id: str, conversation_id: str = None) -> Dict[str, Any]:
     try:
@@ -348,7 +355,7 @@ def parse_llm_response(llm_response: Any, user_id: str, service_type: str, reque
                         input_anchor.setdefault("seq", j)
                         input_anchor.setdefault("numOfConnectedEdges", 0)
                         
-                        # 从sourceAnchors转换为sourceAnchor
+                        # 处理旧格式兼容 - 从sourceAnchors转换为sourceAnchor
                         if "sourceAnchors" in input_anchor and input_anchor["sourceAnchors"]:
                             if isinstance(input_anchor["sourceAnchors"], list) and len(input_anchor["sourceAnchors"]) > 0:
                                 old_source = input_anchor["sourceAnchors"][0]
@@ -370,8 +377,11 @@ def parse_llm_response(llm_response: Any, user_id: str, service_type: str, reque
                                     source_anchor["nodeMark"] = int(source_anchor["nodeMark"])
                                 except (ValueError, TypeError):
                                     source_anchor["nodeMark"] = 0
+                            
+                            # 更新numOfConnectedEdges
+                            input_anchor["numOfConnectedEdges"] = 1 if input_anchor.get("sourceAnchor") else 0
                 
-                # 处理outputAnchors - 适配新格式
+                # 处理outputAnchors
                 for j, output_anchor in enumerate(node["outputAnchors"]):
                     if isinstance(output_anchor, dict):
                         # 添加seq字段
@@ -395,9 +405,11 @@ def parse_llm_response(llm_response: Any, user_id: str, service_type: str, reque
                                 except (ValueError, TypeError):
                                     target_anchor["nodeMark"] = 0
                                 
-                                # 移除旧的mark字段（如果存在）
                                 target_anchor.pop("mark", None)
                                 target_anchor.pop("id", None)  # 移除旧的id字段
+                        
+                        # 更新numOfConnectedEdges为实际的目标锚点数量
+                        output_anchor["numOfConnectedEdges"] = len(output_anchor.get("targetAnchors", []))
             
             return workflow_data
         else:
