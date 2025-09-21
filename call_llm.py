@@ -47,7 +47,7 @@ class ChatResponse(BaseModel):
     requestId: str
     conversation_id: Optional[str] = None # 默认为新对话
 
-# 数据处理请求模型 - 支持动态数据字段
+# 数据处理请求模型
 class DataProcessRequest(BaseModel):
     model: ModelName  # 模型名称
     user_prompt: str  # 用户需求描述
@@ -369,11 +369,6 @@ async def execute_data_process(request: Dict[str, Any]) -> DataProcessResponse:
         answer = result.get("answer", "")
         parsed_result = None
         
-        print(f"=== 解析answer调试信息 ===")
-        print(f"原始answer: {answer}")
-        print(f"answer类型: {type(answer)}")
-        print(f"answer长度: {len(answer) if answer else 0}")
-        
         try:
             # 尝试将answer解析为JSON数据
             if answer and answer.strip():
@@ -405,10 +400,6 @@ async def execute_data_process(request: Dict[str, Any]) -> DataProcessResponse:
             import traceback
             print(f"错误堆栈: {traceback.format_exc()}")
 
-        print(f"最终parsed_result: {parsed_result}")
-        print(f"parsed_result类型: {type(parsed_result)}")
-        print("=== 解析调试信息结束 ===")
-
         return DataProcessResponse(
             status="success",
             answer=answer,
@@ -421,6 +412,7 @@ async def execute_data_process(request: Dict[str, Any]) -> DataProcessResponse:
             status="error",
             error_details=f"{repr(e)}\n{tb}"
         )
+        
 if __name__ == "__main__":
     import uvicorn
 
