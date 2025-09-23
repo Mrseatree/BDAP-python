@@ -606,7 +606,7 @@ def join_tables(params: UnifiedToolParams) -> dict:
                     extra_params = json.loads(params.params)
                     if isinstance(extra_params, str):
                         extra_params = json.loads(extra_params)
-                except Exception as e:git
+                except Exception as e:
                     return {"status": "error", "message": f"params 解析失败: {e}"}
             elif isinstance(params.params, dict):
                 extra_params = params.params
