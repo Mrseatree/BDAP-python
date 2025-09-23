@@ -70,7 +70,6 @@ class DataProcessRequest(BaseModel):
 class DataProcessResponse(BaseModel):
     status: str  # success 或 error
     result: Optional[List[Dict[str, Any]]] = None  # 处理后的数据结果
-    answer: Optional[str] = None  # 大模型的回答
     error_details: Optional[str] = None
 
 app = FastAPI()
@@ -402,7 +401,6 @@ async def execute_data_process(request: Dict[str, Any]) -> DataProcessResponse:
 
         return DataProcessResponse(
             status="success",
-            answer=answer,
             result=parsed_result  # 解析后的数据结果
         )
 
