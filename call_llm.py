@@ -47,7 +47,7 @@ class ChatResponse(BaseModel):
     requestId: str
     conversation_id: Optional[str] = None # 默认为新对话
 
-# 数据处理请求模型 - 支持动态数据字段
+# 数据处理请求模型
 class DataProcessRequest(BaseModel):
     model: ModelName  # 模型名称
     user_prompt: str  # 用户需求描述
@@ -70,7 +70,6 @@ class DataProcessRequest(BaseModel):
 class DataProcessResponse(BaseModel):
     status: str  # success 或 error
     result: Optional[List[Dict[str, Any]]] = None  # 处理后的数据结果
-    answer: Optional[str] = None  # 大模型的回答
     error_details: Optional[str] = None
 
 app = FastAPI()
@@ -241,7 +240,10 @@ async def get_model(request: ChatRequest):
 async def call_dify_with_tools(model: str, query: str, data_dict: Dict[str, List[Dict]], 
                                user_id: str = "default_user", 
                                conversation_id: Optional[str] = None) -> Dict[str, Any]:
-
+    """
+    调用配置了工具函数的Dify应用
+    Dify会根据用户需求自动选择合适的工具函数并调用
+    """
     api_key = MODEL_TO_APIKEY.get(model)
 
     if not api_key:
@@ -262,11 +264,12 @@ async def call_dify_with_tools(model: str, query: str, data_dict: Dict[str, List
         json_str = json.dumps(value, ensure_ascii=False)
         data_inputs[field_name] = json_str
 
+
     data = {
-        "query": query,  # 用户的处理需求描述
         "inputs": data_inputs,
-        "user": user_id,  # 现在有默认值，确保不为空
+        "query": query,  # 用户的处理需求描述
         "response_mode": "blocking",
+        "user": user_id,  # 现在有默认值，确保不为空
         "conversation_id": conversation_id
     }
 
@@ -316,9 +319,10 @@ async def call_dify_with_tools(model: str, query: str, data_dict: Dict[str, List
         tb = traceback.format_exc()
         raise HTTPException(status_code=500, detail=f"[未知错误] {repr(e)}\n{tb}")
 
-# 数据处理接口
+# 统一的数据处理接口
 @app.post("/data-process/execute", response_model=DataProcessResponse)
 async def execute_data_process(request: Dict[str, Any]) -> DataProcessResponse:
+
     try:
         # 提取基本参数
         model = request.get("model")
@@ -328,7 +332,7 @@ async def execute_data_process(request: Dict[str, Any]) -> DataProcessResponse:
         if not model or not query:
             return DataProcessResponse(
                 status="error",
-                error_details="缺少必要参数: model 和 query"
+                error_details="缺少必要参数: model 和 query"  # 改为query
             )
 
         # 提取数据字段 (data0, data1, data2, ...)
@@ -355,14 +359,49 @@ async def execute_data_process(request: Dict[str, Any]) -> DataProcessResponse:
         # 调用Dify，让大模型决策并调用工具函数
         result = await call_dify_with_tools(
             model=model,
-            query=query,  
+            query=query,  # 改为query
             data_dict=data_dict,
             user_id=user_id  # 现在有默认值
         )
 
+        # 解析answer中的JSON数据作为处理结果
+        answer = result.get("answer", "")
+        parsed_result = None
+        
+        try:
+            # 尝试将answer解析为JSON数据
+            if answer and answer.strip():
+                stripped_answer = answer.strip()
+                print(f"去空格后的answer: {stripped_answer}")
+                print(f"是否以[开头: {stripped_answer.startswith('[')}")
+                print(f"是否以]结尾: {stripped_answer.endswith(']')}")
+                
+                # 检查是否是JSON数组格式
+                if stripped_answer.startswith('[') and stripped_answer.endswith(']'):
+                    parsed_result = json.loads(stripped_answer)
+                    print(f"成功解析为数组: {len(parsed_result)} 条记录")
+                    print(f"解析结果类型: {type(parsed_result)}")
+                elif stripped_answer.startswith('{') and stripped_answer.endswith('}'):
+                    # 单个对象也转换为列表
+                    single_obj = json.loads(stripped_answer)
+                    parsed_result = [single_obj]
+                    print(f"成功解析为单个对象并转换为数组")
+                else:
+                    print(f"answer不是标准JSON格式，内容: {stripped_answer[:200]}...")
+            else:
+                print("answer为空或只有空格")
+                
+        except json.JSONDecodeError as e:
+            print(f"JSON解析失败: {e}")
+            print(f"失败的内容: {answer[:500]}...")
+        except Exception as e:
+            print(f"处理answer时出现其他错误: {e}")
+            import traceback
+            print(f"错误堆栈: {traceback.format_exc()}")
+
         return DataProcessResponse(
             status="success",
-            answer=result.get("answer"),
+            result=parsed_result  # 解析后的数据结果
         )
 
     except Exception as e:
@@ -371,7 +410,7 @@ async def execute_data_process(request: Dict[str, Any]) -> DataProcessResponse:
             status="error",
             error_details=f"{repr(e)}\n{tb}"
         )
-
+        
 if __name__ == "__main__":
     import uvicorn
 

@@ -2,7 +2,7 @@ import json
 import re
 from collections import defaultdict
 from typing import List, Dict, Set, Tuple, Union, Any
-from load import loadComponentConfig,loadWhiteList
+from load import loadComponentConfig, loadWhiteList
 
 
 class SimplifiedWorkflowValidator:
@@ -11,7 +11,7 @@ class SimplifiedWorkflowValidator:
         self.max_nodes = max_nodes
         self.warnings = []
         self.errors = []
-        self.node_map = {}  # 使用 (name, mark) 作为键
+        self.node_map = {}  # 使用 mark 作为键
         self.components_config = loadComponentConfig("./component_whitelist.json")
 
     def sanitize(self, workflow_data: dict) -> Tuple[dict, List[str], List[str]]:
@@ -33,34 +33,26 @@ class SimplifiedWorkflowValidator:
 
         # 3. 验证并修正每个节点
         valid_nodes = []
-        seen_keys = set()
+        seen_marks = set()
 
         for node in nodes:
-            node_key = node['seqId']
+            node_mark = node.get('mark', '')
 
             # 检查必需字段
             if not self._validate_node_structure(node):
                 continue
 
-            # 检查节点键唯一性
-            if node_key in seen_keys:
-                self.warnings.append(f"节点标识冲突: {node_key}")
+            # 检查节点mark唯一性
+            if node_mark in seen_marks:
+                self.warnings.append(f"节点标识冲突: {node_mark}")
                 continue
 
-            seen_keys.add(node_key)
+            seen_marks.add(node_mark)
 
             # 组件白名单验证
-            # TODO:如果是非法的组件该如何？直接报错还是试图修复？
-            if node['id'] not in self.whitelist:
-                self.errors.append(f"无效的组件名: '{node['id']}'")
-                continue  # 跳过这个节点，不加入有效节点列表
-            # 若尝试修复：
-            # if node['name'] not in self.whitelist:
-            #     original_name = node['name']
-            #     node['name'] = self._find_nearest_component(original_name)
-            #     self.warnings.append(f"替换无效组件: {original_name} -> {node['name']}")
-            #     # 更新节点键
-            #     node_key = (node['name'], node['mark'])
+            if node.get('id') not in self.whitelist:
+                self.errors.append(f"无效的组件名: '{node.get('id')}'")
+                continue
 
             # 验证属性
             self._sanitize_attributes(node)
@@ -69,7 +61,7 @@ class SimplifiedWorkflowValidator:
             self._init_anchors(node)
 
             valid_nodes.append(node)
-            self.node_map[node_key] = node
+            self.node_map[node_mark] = node
 
         workflow_data['nodes'] = valid_nodes
 
@@ -86,104 +78,138 @@ class SimplifiedWorkflowValidator:
 
     def _validate_basic_structure(self, data: dict) -> bool:
         """验证根结构完整性"""
-        required_keys = {"requestId", "conversation_id", "nodes"}  # 检查这些关键字段是否存在
+        required_keys = {"requestId", "conversation_id", "nodes"}
         if not required_keys.issubset(data.keys()):
+            missing_keys = required_keys - data.keys()
+            self.errors.append(f"缺少必需的根字段: {missing_keys}")
             return False
 
-        if not isinstance(data['nodes'], list):  # 检查 nodes 字段是否是列表类型
+        if not isinstance(data['nodes'], list):
+            self.errors.append("nodes字段必须是列表类型")
             return False
 
         return True
 
     def _validate_node_structure(self, node: dict) -> bool:
         """验证节点基本结构"""
-        required_fields = {'id', 'seqId', 'position'}
-        if not required_fields.issubset(node.keys()):
-            self.warnings.append(f"节点缺少必需字段: {node.get('id', 'unknown')}")
+        required_fields = {'id', 'mark', 'position'}
+        missing_fields = required_fields - node.keys()
+        
+        if missing_fields:
+            node_name = node.get('name', node.get('id', 'unknown'))
+            self.warnings.append(f"节点 '{node_name}' 缺少必需字段: {missing_fields}")
             return False
         return True
 
     def _init_anchors(self, node: dict):
         """初始化锚点结构"""
-        # 输入锚点
+        # 输入锚点 - 新格式
         node.setdefault('inputAnchors', [])
         for anchor in node['inputAnchors']:
             anchor.setdefault('seq', 0)
-            anchor.setdefault('sourceAnchors', [])
-            for s_anchor in anchor['sourceAnchors']:
-                s_anchor.setdefault('id', '')
-                s_anchor.setdefault('mark', 0)
+            anchor.setdefault('numOfConnectedEdges', 0)
+            
+            # 确保sourceAnchor的格式正确
+            if 'sourceAnchor' in anchor and anchor['sourceAnchor']:
+                source_anchor = anchor['sourceAnchor']
+                source_anchor.setdefault('nodeName', '')
+                source_anchor.setdefault('nodeMark', 0)
+                source_anchor.setdefault('seq', 0)
+                
+                # 确保nodeMark是整数类型
+                try:
+                    source_anchor['nodeMark'] = int(source_anchor['nodeMark'])
+                except (ValueError, TypeError):
+                    source_anchor['nodeMark'] = 0
 
-        # 输出锚点
+        # 输出锚点 - 新格式
         node.setdefault('outputAnchors', [])
         for anchor in node['outputAnchors']:
             anchor.setdefault('seq', 0)
+            anchor.setdefault('numOfConnectedEdges', 0)
             anchor.setdefault('targetAnchors', [])
-            for t_anchor in anchor['targetAnchors']:
-                t_anchor.setdefault('id', '')
-                t_anchor.setdefault('mark', 0)
+            
+            for target_anchor in anchor['targetAnchors']:
+                target_anchor.setdefault('nodeName', '')
+                target_anchor.setdefault('nodeMark', 0)
+                target_anchor.setdefault('seq', 0)
+                
+                # 确保nodeMark是整数类型
+                try:
+                    target_anchor['nodeMark'] = int(target_anchor['nodeMark'])
+                except (ValueError, TypeError):
+                    target_anchor['nodeMark'] = 0
 
     def _validate_connections(self, node: dict):
         """验证连接关系"""
-        node_key = node['seqId']
+        node_mark = node.get('mark', '')
 
-        # 验证输入连接
+        # 验证输入连接 - 新格式
         for anchor in node['inputAnchors']:
-            valid_sources = []
-            for s_anchor in anchor.get('sourceAnchors', []):
-                source_key = s_anchor.get('id', '')
+            if 'sourceAnchor' in anchor and anchor['sourceAnchor']:
+                source_anchor = anchor['sourceAnchor']
+                source_mark = str(source_anchor.get('nodeMark', ''))
+                
+                if source_mark and source_mark in self.node_map:
+                    anchor['numOfConnectedEdges'] = 1
+                elif source_mark:
+                    self.warnings.append(f"节点 {node_mark} 引用了不存在的源节点: {source_mark}")
+                    # 清除无效连接
+                    anchor['sourceAnchor'] = None
+                    anchor['numOfConnectedEdges'] = 0
+                else:
+                    anchor['numOfConnectedEdges'] = 0
+            else:
+                anchor['numOfConnectedEdges'] = 0
 
-                if source_key and source_key in self.node_map:
-                    valid_sources.append(s_anchor)
-                elif source_key:
-                    self.warnings.append(f"节点{node_key}引用了不存在的源节点: {source_key}")
-
-            anchor['sourceAnchors'] = valid_sources
-
-        # 验证输出连接
+        # 验证输出连接 - 新格式
         for anchor in node['outputAnchors']:
             valid_targets = []
-            for t_anchor in anchor.get('targetAnchors', []):
-                target_key = t_anchor.get('id', '')
-
-                if target_key and target_key in self.node_map:
-                    valid_targets.append(t_anchor)
-                elif target_key:
-                    self.warnings.append(f"节点{node_key}引用了不存在的目标节点: {target_key}")
+            
+            for target_anchor in anchor.get('targetAnchors', []):
+                target_mark = str(target_anchor.get('nodeMark', ''))
+                
+                if target_mark and target_mark in self.node_map:
+                    valid_targets.append(target_anchor)
+                elif target_mark:
+                    self.warnings.append(f"节点 {node_mark} 引用了不存在的目标节点: {target_mark}")
 
             anchor['targetAnchors'] = valid_targets
+            anchor['numOfConnectedEdges'] = len(valid_targets)
 
     def _detect_cycles(self) -> bool:
         """检测循环依赖"""
-        # 构建连接图
+        # 构建连接图 - 使用mark作为节点标识
         graph = defaultdict(list)
-        for node_key, node in self.node_map.items():
+        
+        for node_mark, node in self.node_map.items():
             for anchor in node.get('inputAnchors', []):
-                for s_anchor in anchor.get('sourceAnchors', []):
-                    source_key = s_anchor.get('id','')
-                    graph[source_key].append(node_key)
+                if 'sourceAnchor' in anchor and anchor['sourceAnchor']:
+                    source_mark = str(anchor['sourceAnchor'].get('nodeMark', ''))
+                    if source_mark in self.node_map:
+                        graph[source_mark].append(node_mark)
 
         # 使用DFS检测循环
         visited = set()
         rec_stack = set()
 
-        def dfs(key):
-            visited.add(key)
-            rec_stack.add(key)
+        def dfs(mark):
+            visited.add(mark)
+            rec_stack.add(mark)
 
-            for neighbor in graph.get(key, []):
+            for neighbor in graph.get(mark, []):
                 if neighbor not in visited:
                     if dfs(neighbor):
                         return True
                 elif neighbor in rec_stack:
                     return True
 
-            rec_stack.remove(key)
+            rec_stack.remove(mark)
             return False
 
-        for node_key in self.node_map.keys():
-            if node_key not in visited:
-                if dfs(node_key):
+        for node_mark in self.node_map.keys():
+            if node_mark not in visited:
+                if dfs(node_mark):
                     return True
 
         return False
@@ -192,7 +218,7 @@ class SimplifiedWorkflowValidator:
         """
         根据节点信息校验属性是否符合规范
         Args:
-            node: 节点字典，包含name和attributes等信息
+            node: 节点字典，包含id和attributes等信息
         Returns:
             包含错误信息的字典，键为错误类型，值为错误消息列表
         """
@@ -218,18 +244,19 @@ class SimplifiedWorkflowValidator:
         component_config = self.components_config.get(component_name)
         if not component_config:
             node_name = node.get("name", "未知节点")
-            return {"component_not_found":[f"节点 '{node_name}': 未找到name为 '{component_name}' 的组件配置"]}
+            self.warnings.append(f"节点 '{node_name}': 未找到id为 '{component_name}' 的组件配置")
+            return {"component_not_found": [f"节点 '{node_name}': 未找到id为 '{component_name}' 的组件配置"]}
 
         errors = {
-            "missing_required":[],  # 缺失必填参数
-            "unknown_attributes":[],  # 未知参数
-            "type_mismatch":[],  # 类型不匹配
-            "invalid_option":[]  # 选项值无效
+            "missing_required": [],  # 缺失必填参数
+            "unknown_attributes": [],  # 未知参数
+            "type_mismatch": [],  # 类型不匹配
+            "invalid_option": []  # 选项值无效
         }
 
         # 获取所有已知属性名
-        known_simple_attrs = {attr["name"]:attr for attr in component_config.get("simpleAttributes", [])}
-        known_complex_attrs = {attr["name"]:attr for attr in component_config.get("complicatedAttributes", [])}
+        known_simple_attrs = {attr["name"]: attr for attr in component_config.get("simpleAttributes", [])}
+        known_complex_attrs = {attr["name"]: attr for attr in component_config.get("complicatedAttributes", [])}
         all_known_attrs = {**known_simple_attrs, **known_complex_attrs}
 
         # 检查是否有未知属性
@@ -266,8 +293,14 @@ class SimplifiedWorkflowValidator:
             #         f"参数 '{chinese_name}' 值 '{attr_value}' 无效，可选值: {allowed_options}"
             #     )
 
+        # 将错误信息添加到警告列表
+        for error_type, error_messages in errors.items():
+            if error_messages:
+                for error_msg in error_messages:
+                    self.warnings.append(f"节点 '{node.get('name', node.get('id', 'unknown'))}': {error_msg}")
+
         # 移除空错误列表
-        return {k:v for k, v in errors.items() if v}
+        return {k: v for k, v in errors.items() if v}
 
     def _check_type(self, value: Any, expected_type: str) -> bool:
         """
@@ -279,11 +312,11 @@ class SimplifiedWorkflowValidator:
             类型是否匹配
         """
         type_mapping = {
-            "String":str,
-            "Int":int,
-            "Double":float,
-            "Boolean":bool,
-            "Long":int
+            "String": str,
+            "Int": int,
+            "Double": float,
+            "Boolean": bool,
+            "Long": int
         }
 
         expected_python_type = type_mapping.get(expected_type)
