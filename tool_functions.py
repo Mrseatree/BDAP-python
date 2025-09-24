@@ -14,11 +14,13 @@ app = FastAPI()
 # 统一的参数模型
 class UnifiedToolParams(BaseModel):
     # file_paths: List[str]
+    file_path1: str = None
+    file_path2: str = None
     # 考虑将文件以JSON格式直接传入
     # file_content: List[str]
     # 考虑将文件以JSON格式传入并使用str结构
-    file_content1: str = None
-    file_content2: str = None
+    # file_content1: str = None
+    # file_content2: str = None
     # output_path: Optional[str] = None  # 改为可选
     # 使用字符串来存储动态参数，然后转换为字典
     params: Optional[str] = "{}"
@@ -77,14 +79,17 @@ class UnifiedToolParams(BaseModel):
     #     return self.output_path
 
     def check_single_file(self):
-        if not self.file_content1:
+        if not self.file_path1:
+            # if not self.file_content1:
             raise ValueError("文件内容不得为空")
 
     def check_multi_files(self, max_files = 2):
-        if not self.file_content1:
+        if not self.file_path1:
+            # if not self.file_content1:
             raise ValueError("文件内容不得为空")
-        if not self.file_content2:
-        # if len(self.file_content) < 2:
+        if not self.file_path2:
+            # if not self.file_content2:
+            # if len(self.file_content) < 2:
             raise ValueError("需要至少两个文件内容")
         # if len(self.file_content) > max_files:
         #     raise ValueError(f"文件过多，最多支持 {max_files} 个")
@@ -126,19 +131,19 @@ def drop_empty_rows(params: UnifiedToolParams) -> dict:
     try:
         # df = pd.read_csv(params.file_paths[0])
         params.check_single_file()
-        raw = params.file_content1
-        #print("raw:", raw, type(raw))
-
-        data = json.loads(raw)
-        #print("after 1st loads:", data, type(data))
+        # raw = params.file_content1
+        # print("raw:", raw, type(raw))
+        # data = json.loads(raw)
+        # print("after 1st loads:", data, type(data))
 
         # 如果还是 str，再转第二次
-        if isinstance(data, str):
-            data = json.loads(data)
+        # if isinstance(data, str):
+        #     data = json.loads(data)
 
-        #print("final data:", data, type(data))
-        df = pd.DataFrame.from_records(data)
-        #print("DataFrame:\n", df)
+        # print("final data:", data, type(data))
+        # df = pd.DataFrame.from_records(data)
+        # print("DataFrame:\n", df)
+        df = pd.read_csv(params.file_path1)
         cleaned_df = df.dropna()
 
         # 自动生成output_path
@@ -164,18 +169,20 @@ def fill_missing_with_mean(params: UnifiedToolParams) -> dict:
     try:
         # df = pd.read_csv(params.file_paths[0])
         params.check_single_file()
-        raw = params.file_content1
+        # raw = params.file_content1
         # print("raw:", raw, type(raw))
 
-        data = json.loads(raw)
+        # data = json.loads(raw)
         # print("after 1st loads:", data, type(data))
 
         # 如果还是 str，再转第二次
-        if isinstance(data, str):
-            data = json.loads(data)
+        # if isinstance(data, str):
+        #     data = json.loads(data)
 
         # print("final data:", data, type(data))
-        df = pd.DataFrame.from_records(data)
+        # df = pd.DataFrame.from_records(data)
+        df = pd.read_csv(params.file_path1)
+
         df = df.fillna(df.mean(numeric_only = True))
 
         # 自动生成output_path
@@ -201,18 +208,20 @@ def fill_missing_with_median(params: UnifiedToolParams) -> dict:
     try:
         # df = pd.read_csv(params.file_paths[0])
         params.check_single_file()
-        raw = params.file_content1
+        # raw = params.file_content1
         # print("raw:", raw, type(raw))
 
-        data = json.loads(raw)
+        # data = json.loads(raw)
         # print("after 1st loads:", data, type(data))
 
         # 如果还是 str，再转第二次
-        if isinstance(data, str):
-            data = json.loads(data)
+        # if isinstance(data, str):
+        #     data = json.loads(data)
 
         # print("final data:", data, type(data))
-        df = pd.DataFrame.from_records(data)
+        # df = pd.DataFrame.from_records(data)
+        df = pd.read_csv(params.file_path1)
+
         df = df.fillna(df.median(numeric_only = True))
 
         # 自动生成output_path
@@ -237,18 +246,20 @@ def fill_missing_with_constant(params: UnifiedToolParams) -> dict:
     import pandas as pd
     try:
         params.check_single_file()
-        raw = params.file_content1
+        # raw = params.file_content1
         # print("raw:", raw, type(raw))
 
-        data = json.loads(raw)
+        # data = json.loads(raw)
         # print("after 1st loads:", data, type(data))
 
         # 如果还是 str，再转第二次
-        if isinstance(data, str):
-            data = json.loads(data)
+        # if isinstance(data, str):
+        #     data = json.loads(data)
 
         # print("final data:", data, type(data))
-        df = pd.DataFrame.from_records(data)
+        # df = pd.DataFrame.from_records(data)
+        df = pd.read_csv(params.file_path1)
+
         constant_value = params.get_param('constant_value') or params.get_param('value')
         if constant_value is None:
             raise ValueError("需要提供constant_value或value参数")
@@ -277,18 +288,20 @@ def fill_missing_with_mode(params: UnifiedToolParams) -> dict:
     import pandas as pd
     try:
         params.check_single_file()
-        raw = params.file_content1
+        # raw = params.file_content1
         # print("raw:", raw, type(raw))
 
-        data = json.loads(raw)
+        # data = json.loads(raw)
         # print("after 1st loads:", data, type(data))
 
         # 如果还是 str，再转第二次
-        if isinstance(data, str):
-            data = json.loads(data)
+        # if isinstance(data, str):
+        #     data = json.loads(data)
 
         # print("final data:", data, type(data))
-        df = pd.DataFrame.from_records(data)
+        # df = pd.DataFrame.from_records(data)
+        df = pd.read_csv(params.file_path1)
+
         df = df.fillna(df.mode().iloc[0])
 
         # 自动生成output_path
@@ -313,18 +326,20 @@ def filter_by_column(params: UnifiedToolParams) -> dict:
     import pandas as pd
     try:
         params.check_single_file()
-        raw = params.file_content1
+        # raw = params.file_content1
         # print("raw:", raw, type(raw))
 
-        data = json.loads(raw)
+        # data = json.loads(raw)
         # print("after 1st loads:", data, type(data))
 
         # 如果还是 str，再转第二次
-        if isinstance(data, str):
-            data = json.loads(data)
+        # if isinstance(data, str):
+        #     data = json.loads(data)
 
         # print("final data:", data, type(data))
-        df = pd.DataFrame.from_records(data)
+        # df = pd.DataFrame.from_records(data)
+        df = pd.read_csv(params.file_path1)
+
         column = params.get_param('column')
         condition = params.get_param('condition')
         value = params.get_param('value')
@@ -369,18 +384,20 @@ def rename_column(params: UnifiedToolParams) -> dict:
     import pandas as pd
     try:
         params.check_single_file()
-        raw = params.file_content1
+        # raw = params.file_content1
         # print("raw:", raw, type(raw))
 
-        data = json.loads(raw)
+        # data = json.loads(raw)
         # print("after 1st loads:", data, type(data))
 
         # 如果还是 str，再转第二次
-        if isinstance(data, str):
-            data = json.loads(data)
+        # if isinstance(data, str):
+        #     data = json.loads(data)
 
         # print("final data:", data, type(data))
-        df = pd.DataFrame.from_records(data)
+        # df = pd.DataFrame.from_records(data)
+        df = pd.read_csv(params.file_path1)
+
         old_name = params.get_param('old_name')
         new_name = params.get_param('new_name')
 
@@ -413,18 +430,20 @@ def convert_column_type(params: UnifiedToolParams) -> dict:
     import pandas as pd
     try:
         params.check_single_file()
-        raw = params.file_content1
+        # raw = params.file_content1
         # print("raw:", raw, type(raw))
 
-        data = json.loads(raw)
+        # data = json.loads(raw)
         # print("after 1st loads:", data, type(data))
 
         # 如果还是 str，再转第二次
-        if isinstance(data, str):
-            data = json.loads(data)
+        # if isinstance(data, str):
+        #     data = json.loads(data)
 
         # print("final data:", data, type(data))
-        df = pd.DataFrame.from_records(data)
+        # df = pd.DataFrame.from_records(data)
+        df = pd.read_csv(params.file_path1)
+
         column = params.get_param('column')
         target_type = params.get_param('target_type')
 
@@ -466,18 +485,20 @@ def aggregate_column(params: UnifiedToolParams) -> dict:
     import pandas as pd
     try:
         params.check_single_file()
-        raw = params.file_content1
+        # raw = params.file_content1
         # print("raw:", raw, type(raw))
 
-        data = json.loads(raw)
+        # data = json.loads(raw)
         # print("after 1st loads:", data, type(data))
 
         # 如果还是 str，再转第二次
-        if isinstance(data, str):
-            data = json.loads(data)
+        # if isinstance(data, str):
+        #     data = json.loads(data)
 
         # print("final data:", data, type(data))
-        df = pd.DataFrame.from_records(data)
+        # df = pd.DataFrame.from_records(data)
+        df = pd.read_csv(params.file_path1)
+
         group_by = params.get_param('group_by')
         target_column = params.get_param('target_column')  # 不聚合的列
         agg_func = params.get_param('agg_func')  # 聚合的列
@@ -543,18 +564,20 @@ def sort_by_column(params: UnifiedToolParams) -> dict:
     import pandas as pd
     try:
         params.check_single_file()
-        raw = params.file_content1
+        # raw = params.file_content1
         # print("raw:", raw, type(raw))
 
-        data = json.loads(raw)
+        # data = json.loads(raw)
         # print("after 1st loads:", data, type(data))
 
         # 如果还是 str，再转第二次
-        if isinstance(data, str):
-            data = json.loads(data)
+        # if isinstance(data, str):
+        #     data = json.loads(data)
 
         # print("final data:", data, type(data))
-        df = pd.DataFrame.from_records(data)
+        # df = pd.DataFrame.from_records(data)
+        df = pd.read_csv(params.file_path1)
+
         column = params.get_param('column')
         ascending = params.get_param('ascending', True)
 
@@ -592,20 +615,23 @@ def join_tables(params: UnifiedToolParams) -> dict:
         # df1 = pd.read_csv(params.file_paths[0])
         # df2 = pd.read_csv(params.file_paths[1])
         params.check_multi_files()
-        raw1 = params.file_content1
-        raw2 = params.file_content2
+        # raw1 = params.file_content1
+        # raw2 = params.file_content2
 
-        data1 = json.loads(raw1)
-        data2 = json.loads(raw2)
+        # data1 = json.loads(raw1)
+        # data2 = json.loads(raw2)
 
-        if isinstance(data1, str):
-            data1 = json.loads(raw1)
+        # if isinstance(data1, str):
+        #     data1 = json.loads(raw1)
 
-        if isinstance(data2, str):
-            data2 = json.loads(raw2)
+        # if isinstance(data2, str):
+        #     data2 = json.loads(raw2)
 
-        df1 = pd.DataFrame.from_records(data1)
-        df2 = pd.DataFrame.from_records(data2)
+        # df1 = pd.DataFrame.from_records(data1)
+        # df2 = pd.DataFrame.from_records(data2)
+        df1 = pd.read_csv(params.file_path1)
+        df2 = pd.read_csv(params.file_path2)
+
         how = params.join_mode
 
         if how and how not in ["left", "right", "outer", "inner"]:
