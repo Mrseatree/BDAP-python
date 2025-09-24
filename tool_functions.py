@@ -625,24 +625,28 @@ def join_tables(params: UnifiedToolParams) -> dict:
         df2 = pd.read_csv(params.file_path2)
 
         # 2. 解析 join 参数（兼容 string / dict）
-        extra_params = {}
-        if hasattr(params, "params") and params.params:
-            if isinstance(params.params, str):
-                try:
-                    # Dify 可能多一层转义，所以解析两次
-                    extra_params = json.loads(params.params)
-                    if isinstance(extra_params, str):
-                        extra_params = json.loads(extra_params)
-                except Exception as e:
-                    return {"status":"error", "message":f"params 解析失败: {e}"}
-            elif isinstance(params.params, dict):
-                extra_params = params.params
+        # extra_params = {}
+        # if hasattr(params, "params") and params.params:
+        #     if isinstance(params.params, str):
+        #         try:
+        #             # Dify 可能多一层转义，所以解析两次
+        #             extra_params = json.loads(params.params)
+        #             if isinstance(extra_params, str):
+        #                 extra_params = json.loads(extra_params)
+        #         except Exception as e:
+        #             return {"status":"error", "message":f"params 解析失败: {e}"}
+        #     elif isinstance(params.params, dict):
+        #         extra_params = params.params
 
         # 取连接键
-        on = extra_params.get("on")
-        left_on = extra_params.get("left_on")
-        right_on = extra_params.get("right_on")
-        how = extra_params.get("join_mode", "inner")
+        # on = extra_params.get("on")
+        # left_on = extra_params.get("left_on")
+        # right_on = extra_params.get("right_on")
+        # how = extra_params.get("join_mode", "inner")
+        on = params.on
+        left_on = params.left_on
+        right_on = params.right_on
+        how = params.join_mode
 
         if how not in ["left", "right", "outer", "inner"]:
             raise ValueError("连接模式不合法")
@@ -668,7 +672,6 @@ def join_tables(params: UnifiedToolParams) -> dict:
             "status":"error",
             "message":f"join 处理失败: {str(e)}"
         }
-
 
 # def parse_file_content(file_content):
 #     if isinstance(file_content, str):
