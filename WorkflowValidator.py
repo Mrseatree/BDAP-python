@@ -14,7 +14,7 @@ class SimplifiedWorkflowValidator:
         self.node_map = {}  # 使用 mark 作为键
         self.components_config = loadComponentConfig("./component_whitelist.json")
 
-    def sanitize(self, workflow_data: dict) -> Tuple[dict, List[str], List[str]]:
+    async def sanitize(self, workflow_data: dict) -> Tuple[dict, List[str], List[str]]:
         # 重置状态
         self.warnings = []
         self.errors = []
@@ -35,46 +35,49 @@ class SimplifiedWorkflowValidator:
         valid_nodes = []
         seen_marks = set()
 
-        for node in nodes:
-            node_mark = node.get('mark', '')
-
-            # 检查必需字段
+        # 异步处理每个节点
+        async def process_node(node):
+            local_warnings,local_errors=[],[]
+            node_mark=node.get("mark","")
             if not self._validate_node_structure(node):
-                continue
+                return None, local_warnings, local_errors
 
-            # 检查节点mark唯一性
             if node_mark in seen_marks:
-                self.warnings.append(f"节点标识冲突: {node_mark}")
-                continue
+                local_warnings.append(f"节点标识冲突: {node_mark}")
+                return None, local_warnings, local_errors
 
-            seen_marks.add(node_mark)
+            if node.get("id") not in self.whitelist:
+                local_errors.append(f"无效的组件名: '{node.get('id')}'")
+                return None, local_warnings, local_errors
 
-            # 组件白名单验证
-            if node.get('id') not in self.whitelist:
-                self.errors.append(f"无效的组件名: '{node.get('id')}'")
-                continue
-
-            # 验证属性
-            self._sanitize_attributes(node)
-
-            # 验证锚点
+            await self._sanitize_attributes(node)  # 异步属性处理
             self._init_anchors(node)
+            return node, local_warnings, local_errors
 
-            valid_nodes.append(node)
-            self.node_map[node_mark] = node
+        results=await asyncio.gather(*(process_node(n)for n in nodes))
 
-        workflow_data['nodes'] = valid_nodes
+        for node, local_warnings, local_errors in results:
+            self.warnings.extend(local_warnings)
+            self.errors.extend(local_errors)
+            if node:
+                mark = node["mark"]
+                if mark not in seen_marks:
+                    seen_marks.add(mark)
+                    valid_nodes.append(node)
+                    self.node_map[mark] = node
 
-        # 4. 验证连接关系
-        for node in valid_nodes:
-            self._validate_connections(node)
+        workflow_data["nodes"] = valid_nodes
 
-        # 5. 检测循环
+        # 异步检查节点之间的连接
+        await asyncio.gather(*(self._validate_connections(node) for node in valid_nodes))
+
+        # 同步检测循环依赖
         if self._detect_cycles():
             self.errors.append("工作流中存在循环依赖")
             return None, self.warnings, self.errors
 
         return workflow_data, self.warnings, self.errors
+
 
     def _validate_basic_structure(self, data: dict) -> bool:
         """验证根结构完整性"""
@@ -140,7 +143,7 @@ class SimplifiedWorkflowValidator:
                 except (ValueError, TypeError):
                     target_anchor['nodeMark'] = 0
 
-    def _validate_connections(self, node: dict):
+    async def _validate_connections(self, node: dict):
         """验证连接关系"""
         node_mark = node.get('mark', '')
 
@@ -214,7 +217,7 @@ class SimplifiedWorkflowValidator:
 
         return False
 
-    def _sanitize_attributes(self, node: Dict[str, Any]) -> Dict[str, List[str]]:
+    async def _sanitize_attributes(self, node: Dict[str, Any]) -> Dict[str, List[str]]:
         """
         根据节点信息校验属性是否符合规范
         Args:
