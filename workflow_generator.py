@@ -11,6 +11,7 @@ from consul_utils import register_service, deregister_service
 from config import SERVICE_NAME
 from WorkflowValidator import SimplifiedWorkflowValidator
 from call_llm import call_dify
+import asyncio
 
 app = FastAPI()
 
@@ -163,7 +164,7 @@ class WorkflowQueueManager:
             
             # 3. 工作流校验
             validator = SimplifiedWorkflowValidator()
-            sanitized_workflow, warnings, errors = validator.sanitize(workflow_structure)
+            sanitized_workflow, warnings, errors = await validator.sanitize(workflow_structure)
             
             if sanitized_workflow is None:
                 # 创建失败结果
