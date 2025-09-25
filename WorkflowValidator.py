@@ -3,6 +3,7 @@ import re
 from collections import defaultdict
 from typing import List, Dict, Set, Tuple, Union, Any
 from load import loadComponentConfig, loadWhiteList
+import asyncio
 
 
 class SimplifiedWorkflowValidator:
