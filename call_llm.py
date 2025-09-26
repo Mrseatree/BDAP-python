@@ -17,8 +17,9 @@ import atexit
 import requests
 import traceback
 import json
+import pandas as pd
 
-# 例子，后续需要将其中的模型名字进行规范
+# 模型枚举
 class ModelName(str, Enum):
     silicon_flow = "silicon-flow"
     moonshot = "moonshot"
@@ -42,6 +43,7 @@ class ChatRequest(BaseModel):
     user_id: Optional[str] # 默认为匿名用户
     conversation_id: Optional[str] = None # 默认为新对话
 
+
 class ChatResponse(BaseModel):
     answer: str
     requestId: str
@@ -52,32 +54,24 @@ class DataProcessRequest(BaseModel):
     model: ModelName  # 模型名称
     user_prompt: str  # 用户需求描述
     user_id: Optional[str] = "defaultid"  # 用户ID
-    
-    def __init__(self, **data):
-        # 提取所有以 'data' 开头的字段
-        self.data_fields = {}
-        regular_fields = {}
-        
-        for key, value in data.items():
-            if key.startswith('data') and key[4:].isdigit():
-                self.data_fields[key] = value
-            else:
-                regular_fields[key] = value
-        
-        super().__init__(**regular_fields)
+    file_path1: str  # HDFS文件路径1
+    file_content1: str  # 文件1的部分内容（JSON字符串，包含列名等）
+    file_path2: Optional[str] = None  # HDFS文件路径2
+    file_content2: Optional[str] = None  # 文件2的部分内容
+    output_path: str  # HDFS输出路径
 
 # 数据处理响应模型
 class DataProcessResponse(BaseModel):
     status: str  # success 或 error
-    result: Optional[List[Dict[str, Any]]] = None  # 处理后的数据结果
+    message: str  # 处理结果描述
+    output_path: Optional[str] = None  # 输出文件HDFS路径
     error_details: Optional[str] = None
 
 app = FastAPI()
 
-# 添加服务启动和关闭事件
+# 服务注册相关代码...
 @app.on_event("startup")
 async def startup_event():
-    """服务启动时注册到Consul"""
     service_id = start_call_llm_service()
     if service_id:
         app.state.service_id = service_id
@@ -85,23 +79,22 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    """服务关闭时从Consul注销"""
     if hasattr(app.state, 'service_id'):
         deregister_service(app.state.service_id)
 
 def start_call_llm_service():
     SERVICE_PORT = 8000
-    tags = ['llm', 'ai', 'dify']
+    tags = ['llm', 'ai', 'dify', 'data-processing']
     service_id = register_service(SERVICE_PORT, tags)
     return service_id
 
-# 健康检查端点
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "service": SERVICE_NAME}
 
 def perform_web_search(query: str) -> str:
     try:
+        # 使用正确的变量
         search_url = f"{SEARXNG_URL}/search"
         print(f"正在搜索: {query}")
         print(f"搜索URL: {search_url}")
@@ -109,11 +102,12 @@ def perform_web_search(query: str) -> str:
         resp = requests.get(
             search_url,
             params={"q": query, "format": "json"},
-            timeout=10
+            timeout=10  # 适当增加超时时间
         )
 
         print(f"搜索响应状态码: {resp.status_code}")
 
+        # 检查HTTP状态码
         if resp.status_code != 200:
             return f"【联网搜索失败】：HTTP {resp.status_code} - {resp.text}\n"
 
@@ -126,6 +120,7 @@ def perform_web_search(query: str) -> str:
         if not results:
             return f"【联网搜索结果】：未找到相关信息\n"
 
+        # 取前3个结果
         top_results = results[:3]
         formatted = "\n".join([
             f"{i + 1}. {r.get('title', '无标题')}\nURL: {r.get('url', '无URL')}\n摘要: {r.get('content', '无摘要')}"
@@ -144,11 +139,11 @@ def perform_web_search(query: str) -> str:
         print(f"未知错误: {e}")
         return f"【联网搜索失败】：{e}\n"
 
-async def call_dify(model: str, prompt: str, user_id: str, conversation_id: Optional[str] = None) -> tuple:
+async def call_dify(model: str, prompt: str, user_id: str, conversation_id: Optional[str] = None) -> str:
     api_key = MODEL_TO_APIKEY.get(model)
 
     if not api_key:
-        return f"[error]模型{model}未配置API KEY", None
+        return f"[error]模型{model}未配置API KEY"
 
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -160,7 +155,7 @@ async def call_dify(model: str, prompt: str, user_id: str, conversation_id: Opti
         "query": prompt,
         "response_mode": "blocking",
         "user": user_id,
-        "conversation_id": conversation_id
+        "conversation_id": conversation_id   # 若有上下文则填
     }
 
     timeout = httpx.Timeout(120.0, read=120.0, connect=10.0)
@@ -176,7 +171,7 @@ async def call_dify(model: str, prompt: str, user_id: str, conversation_id: Opti
                 raise HTTPException(status_code=504, detail="[Dify错误]模型响应超时，稍后再试")
 
             try:
-                result = resp.json()
+                result = resp.json()  # 只在成功时赋值
             except Exception as e:
                 raise HTTPException(status_code=502, detail=f"[响应格式错误]无法解析JSON:{e}\n原始响应:{resp.text}")
 
@@ -187,6 +182,7 @@ async def call_dify(model: str, prompt: str, user_id: str, conversation_id: Opti
             else:
                 raise HTTPException(status_code=502, detail="[Dify响应格式异常]")
 
+
     except httpx.ReadTimeout:
         raise HTTPException(status_code=504, detail="[超时] Dify 响应超时")
     except httpx.RequestError as e:
@@ -194,12 +190,14 @@ async def call_dify(model: str, prompt: str, user_id: str, conversation_id: Opti
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"[未知错误] {e}")
 
-# 聊天接口
+
+# 接口的返回值应当符合ChatResponse的Pydantic模型结构
 @app.post("/llm", response_model=ChatResponse)
 async def get_model(request: ChatRequest):
     if not request.question:
         raise HTTPException(status_code=400, detail="question 不能为空")
 
+    # 原始问题
     question = request.question.strip()
 
     if request.use_web_search:
@@ -216,17 +214,20 @@ async def get_model(request: ChatRequest):
                 f"【用户问题】：{question}"
             )
         except Exception as e:
+            # 联网失败，降级处理
             full_prompt = (
                 "【提示】：联网搜索失败，以下为基于已有知识的回答。\n\n"
                 f"【用户问题】：{question}"
             )
     else:
+        # 不使用联网搜索时直接使用原问题
         full_prompt = question
 
+    # 调用 Dify 接口
     answer, new_conversation_id = await call_dify(
         request.model,
         full_prompt,
-        user_id=request.user_id or "defaultid",
+        user_id=request.user_id,
         conversation_id=str(request.conversation_id) if request.conversation_id else None
     )
 
@@ -236,53 +237,141 @@ async def get_model(request: ChatRequest):
         conversation_id=new_conversation_id
     )
 
-# 数据处理专用的Dify调用函数
-async def call_dify_with_tools(model: str, query: str, data_dict: Dict[str, List[Dict]], 
-                               user_id: str = "default_user", 
-                               conversation_id: Optional[str] = None) -> Dict[str, Any]:
+def download_hdfs_file(hdfs_path: str, local_dir: str) -> str:
     """
-    调用配置了工具函数的Dify应用
-    Dify会根据用户需求自动选择合适的工具函数并调用
+    从HDFS下载文件到本地目录
+    返回本地文件路径
     """
-    api_key = MODEL_TO_APIKEY.get(model)
+    try:
+        # 解析HDFS路径
+        hdfs_prefix = "hdfs://bdap-cluster-01:8020"
+        clean_hdfs_path = hdfs_path.replace(hdfs_prefix, "")
+        if not clean_hdfs_path.startswith("/"):
+            clean_hdfs_path = "/" + clean_hdfs_path
+        
+        # 生成本地文件路径
+        filename = os.path.basename(clean_hdfs_path)
+        short_uuid = str(uuid.uuid4())[:8]
+        local_path = os.path.join(local_dir, f"{short_uuid}_{filename}")
+        
+        # 确保本地目录存在
+        os.makedirs(local_dir, exist_ok=True)
+        
+        # 下载文件
+        result = subprocess.run(
+            ["hdfs", "dfs", "-get", clean_hdfs_path, local_path],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
+        )
+        
+        print(f"已下载HDFS文件: {hdfs_path} -> {local_path}")
+        return local_path
+        
+    except subprocess.CalledProcessError as e:
+        error_msg = f"HDFS文件下载失败: {e.stderr.decode() if e.stderr else str(e)}"
+        raise HTTPException(status_code=500, detail=error_msg)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"下载文件时发生错误: {str(e)}")
 
+def upload_to_hdfs(local_path: str, hdfs_path: str, max_retries: int = 3) -> None:
+    """
+    将本地文件上传到HDFS
+    """
+    try:
+        # 解析HDFS路径
+        hdfs_prefix = "hdfs://bdap-cluster-01:8020"
+        clean_hdfs_path = hdfs_path.replace(hdfs_prefix, "")
+        if not clean_hdfs_path.startswith("/"):
+            clean_hdfs_path = "/" + clean_hdfs_path
+        
+        # 确保父目录存在
+        hdfs_parent = os.path.dirname(clean_hdfs_path)
+        subprocess.run(
+            ["hdfs", "dfs", "-mkdir", "-p", hdfs_parent],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
+        )
+        
+        # 上传文件（带重试）
+        for attempt in range(1, max_retries + 1):
+            try:
+                subprocess.run(
+                    ["hdfs", "dfs", "-put", "-f", local_path, clean_hdfs_path],
+                    check=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE
+                )
+                print(f"已上传到HDFS: {local_path} -> {hdfs_path}")
+                return
+            except subprocess.CalledProcessError as e:
+                if attempt == max_retries:
+                    raise e
+                print(f"上传重试 {attempt}/{max_retries}")
+                time.sleep(2)
+                
+    except subprocess.CalledProcessError as e:
+        error_msg = f"HDFS文件上传失败: {e.stderr.decode() if e.stderr else str(e)}"
+        raise HTTPException(status_code=500, detail=error_msg)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"上传文件时发生错误: {str(e)}")
+
+def cleanup_local_files(*file_paths: str) -> None:
+    """清理本地临时文件"""
+    for file_path in file_paths:
+        if file_path and os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+                print(f"已删除本地文件: {file_path}")
+            except Exception as e:
+                print(f"删除文件失败 {file_path}: {e}")
+
+async def call_dify_with_local_files(model: str, query: str, local_file_path1: str, 
+                                   file_content1: str, local_file_path2: Optional[str] = None,
+                                   file_content2: Optional[str] = None, 
+                                   output_path: Optional[str] = None,
+                                   user_id: str = "default_user") -> str:
+
+    api_key = MODEL_TO_APIKEY.get(model)
     if not api_key:
-        raise HTTPException(status_code=400, detail=f"[error]模型{model}未配置API KEY")
+        raise HTTPException(status_code=400, detail=f"模型{model}未配置API KEY")
 
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
     }
 
-    # 将数据拆解为独立的file_content字段传给Dify
-    # Dify期望每个file_content都是独立的字符串字段
-    data_inputs = {}
+    # 构建inputs，传递本地文件路径和内容给大模型
+    inputs = {
+        "file_path1": local_file_path1,
+        "file_content1": file_content1,
+    }
     
-    # 为每个数据集创建独立的file_content字段
-    for i, (key, value) in enumerate(data_dict.items()):
-        field_name = f"file_content{i + 1}"  # file_content1, file_content2, ...
-        json_str = json.dumps(value, ensure_ascii=False)
-        data_inputs[field_name] = json_str
-
+    if output_path:
+        # 为输出文件生成本地路径
+        base_name = os.path.splitext(os.path.basename(output_path))[0]
+        local_output_path = os.path.join(SHARED_DIR, f"output_{base_name}_{str(uuid.uuid4())[:8]}.csv")
+        inputs["output_path"] = local_output_path
+    
+    # 如果有第二个文件
+    if local_file_path2 and file_content2:
+        inputs["file_path2"] = local_file_path2
+        inputs["file_content2"] = file_content2
 
     data = {
-        "inputs": data_inputs,
-        "query": query,  # 用户的处理需求描述
+        "inputs": inputs,
+        "query": query,
         "response_mode": "blocking",
-        "user": user_id,  # 现在有默认值，确保不为空
-        "conversation_id": conversation_id
+        "user": user_id
     }
 
-    print("=== 调试信息 ===")
-    print("发送到Dify的数据:")
-    print(f"- 数据集字段: {list(data_inputs.keys())}")
-    for i, (key, value) in enumerate(data_dict.items()):
-        data_length = len(value) if isinstance(value, list) else 0
-        field_name = f"file_content{i + 1}"
-        print(f"  - {field_name} ({key}): {data_length} 条记录")
-    print("- query:", query)
-    print("- user:", user_id)
-    print("===============")
+    print("=== 发送到Dify的数据 ===")
+    print(f"- 文件1: {local_file_path1}")
+    print(f"- 文件2: {local_file_path2 or 'None'}")
+    print(f"- 输出路径: {inputs.get('output_path', 'Auto-generated')}")
+    print(f"- query: {query}")
+    print("========================")
 
     timeout = httpx.Timeout(120.0, read=120.0, connect=10.0)
 
@@ -291,133 +380,105 @@ async def call_dify_with_tools(model: str, query: str, data_dict: Dict[str, List
             resp = await client.post(dify_url, headers=headers, json=data)
 
             print("状态码:", resp.status_code)
-            print("原始内容:", resp.text)
+            print("Dify响应:", resp.text[:500] + "..." if len(resp.text) > 500 else resp.text)
 
             if resp.status_code == 504:
-                raise HTTPException(status_code=504, detail="[Dify错误]模型响应超时，稍后再试")
+                raise HTTPException(status_code=504, detail="Dify响应超时")
 
             try:
                 result = resp.json()
             except Exception as e:
-                raise HTTPException(status_code=502, detail=f"[响应格式错误]无法解析JSON:{e}\n原始响应:{resp.text}")
+                raise HTTPException(status_code=502, detail=f"响应解析失败: {e}")
 
             if "answer" in result:
-                return {
-                    "answer": result["answer"],
-                    "conversation_id": result.get("conversation_id")
-                }
-            elif "message" in result:
-                raise HTTPException(status_code=502, detail=f"[Dify错误] {result['message']}")
+                # 从answer中提取输出文件路径
+                answer = result["answer"]
+                
+                # 查找实际生成的输出文件
+                expected_output = inputs.get("output_path")
+                if expected_output and os.path.exists(expected_output):
+                    return expected_output, answer
+                else:
+                    # 如果预期路径不存在，尝试从SHARED_DIR中找到最新的输出文件
+                    output_files = glob.glob(os.path.join(SHARED_DIR, "*_output_*.csv"))
+                    if output_files:
+                        # 返回最新创建的文件
+                        latest_file = max(output_files, key=os.path.getctime)
+                        return latest_file, answer
+                    else:
+                        raise HTTPException(status_code=500, detail="工具函数未生成预期的输出文件")
             else:
-                raise HTTPException(status_code=502, detail="[Dify响应格式异常]")
+                error_msg = result.get("message", "Dify响应格式异常")
+                raise HTTPException(status_code=502, detail=f"Dify错误: {error_msg}")
 
     except httpx.ReadTimeout:
-        raise HTTPException(status_code=504, detail="[超时] Dify 响应超时")
+        raise HTTPException(status_code=504, detail="Dify响应超时")
     except httpx.RequestError as e:
-        raise HTTPException(status_code=502, detail=f"[请求失败] {e}")
+        raise HTTPException(status_code=502, detail=f"请求失败: {e}")
     except Exception as e:
         tb = traceback.format_exc()
-        raise HTTPException(status_code=500, detail=f"[未知错误] {repr(e)}\n{tb}")
+        raise HTTPException(status_code=500, detail=f"调用Dify失败: {repr(e)}\n{tb}")
 
-# 统一的数据处理接口
 @app.post("/data-process/execute", response_model=DataProcessResponse)
-async def execute_data_process(request: Dict[str, Any]) -> DataProcessResponse:
+async def execute_data_process(request: DataProcessRequest) -> DataProcessResponse:
 
+    local_file1_path = None
+    local_file2_path = None
+    local_output_path = None
+    
     try:
-        # 提取基本参数
-        model = request.get("model")
-        query = request.get("query")  # 改为query
-        user_id = request.get("user_id", "default_user")  # 设置默认值
+        # 1. 下载主文件
+        print(f"开始下载主文件: {request.file_path1}")
+        local_file1_path = download_hdfs_file(request.file_path1, SHARED_DIR)
         
-        if not model or not query:
-            return DataProcessResponse(
-                status="error",
-                error_details="缺少必要参数: model 和 query"  # 改为query
-            )
-
-        # 提取数据字段 (data0, data1, data2, ...)
-        data_dict = {}
-        for key, value in request.items():
-            if key.startswith('data') and key[4:].isdigit():
-                if not isinstance(value, list):
-                    return DataProcessResponse(
-                        status="error",
-                        error_details=f"数据字段 {key} 必须是列表格式"
-                    )
-                data_dict[key] = value
-
-        if not data_dict:
-            return DataProcessResponse(
-                status="error",
-                error_details="未找到任何数据字段 (data0, data1, ...)"
-            )
-
-        print(f"接收到数据处理请求: {len(data_dict)} 个数据集")
-        for key, value in data_dict.items():
-            print(f"- {key}: {len(value)} 条记录")
-
-        # 调用Dify，让大模型决策并调用工具函数
-        result = await call_dify_with_tools(
-            model=model,
-            query=query,  # 改为query
-            data_dict=data_dict,
-            user_id=user_id  # 现在有默认值
+        # 2. 下载副文件
+        local_file2_path = None
+        if request.file_path2:
+            print(f"开始下载副文件: {request.file_path2}")
+            local_file2_path = download_hdfs_file(request.file_path2, SHARED_DIR)
+        
+        # 3. 调用大模型进行数据处理
+        print("调用大模型进行数据处理...")
+        local_output_path, answer = await call_dify_with_local_files(
+            model=request.model,
+            query=request.user_prompt,
+            local_file_path1=local_file1_path,
+            file_content1=request.file_content1,
+            local_file_path2=local_file2_path,
+            file_content2=request.file_content2,
+            output_path=request.output_path,
+            user_id=request.user_id
         )
-
-        # 解析answer中的JSON数据作为处理结果
-        answer = result.get("answer", "")
-        parsed_result = None
         
-        try:
-            # 尝试将answer解析为JSON数据
-            if answer and answer.strip():
-                stripped_answer = answer.strip()
-                print(f"去空格后的answer: {stripped_answer}")
-                print(f"是否以[开头: {stripped_answer.startswith('[')}")
-                print(f"是否以]结尾: {stripped_answer.endswith(']')}")
-                
-                # 检查是否是JSON数组格式
-                if stripped_answer.startswith('[') and stripped_answer.endswith(']'):
-                    parsed_result = json.loads(stripped_answer)
-                    print(f"成功解析为数组: {len(parsed_result)} 条记录")
-                    print(f"解析结果类型: {type(parsed_result)}")
-                elif stripped_answer.startswith('{') and stripped_answer.endswith('}'):
-                    # 单个对象也转换为列表
-                    single_obj = json.loads(stripped_answer)
-                    parsed_result = [single_obj]
-                    print(f"成功解析为单个对象并转换为数组")
-                else:
-                    print(f"answer不是标准JSON格式，内容: {stripped_answer[:200]}...")
-            else:
-                print("answer为空或只有空格")
-                
-        except json.JSONDecodeError as e:
-            print(f"JSON解析失败: {e}")
-            print(f"失败的内容: {answer[:500]}...")
-        except Exception as e:
-            print(f"处理answer时出现其他错误: {e}")
-            import traceback
-            print(f"错误堆栈: {traceback.format_exc()}")
-
+        # 4. 上传结果到HDFS
+        print(f"上传结果到HDFS: {request.output_path}")
+        upload_to_hdfs(local_output_path, request.output_path)
+        
         return DataProcessResponse(
             status="success",
-            result=parsed_result  # 解析后的数据结果
+            message=f"数据处理完成: {answer}",
+            output_path=request.output_path
         )
-
+        
     except Exception as e:
         tb = traceback.format_exc()
         return DataProcessResponse(
             status="error",
+            message="数据处理失败",
             error_details=f"{repr(e)}\n{tb}"
         )
-        
+    finally:
+        # 5. 清理本地文件
+        print("清理临时文件...")
+        cleanup_local_files(local_file1_path, local_file2_path, local_output_path)
+
 if __name__ == "__main__":
     import uvicorn
-
-    # 注册服务到Consul
+    
+    # 确保共享目录存在
+    os.makedirs(SHARED_DIR, exist_ok=True)
+    
     service_id = register_service()
-
-    # 程序退出时注销服务
     if service_id:
         atexit.register(deregister_service, service_id)
 
