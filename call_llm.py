@@ -52,7 +52,7 @@ class ChatResponse(BaseModel):
 # 数据处理请求模型
 class DataProcessRequest(BaseModel):
     model: ModelName  # 模型名称
-    user_prompt: str  # 用户需求描述
+    query: str  # 用户需求描述
     user_id: Optional[str] = "defaultid"  # 用户ID
     file_path1: str  # HDFS文件路径1
     file_content1: str  # 文件1的部分内容（JSON字符串，包含列名等）
@@ -441,7 +441,7 @@ async def execute_data_process(request: DataProcessRequest) -> DataProcessRespon
         print("调用大模型进行数据处理...")
         local_output_path, answer = await call_dify_with_local_files(
             model=request.model,
-            query=request.user_prompt,
+            query=request.query,
             local_file_path1=local_file1_path,
             file_content1=request.file_content1,
             local_file_path2=local_file2_path,
