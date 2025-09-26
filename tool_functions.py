@@ -643,10 +643,10 @@ def join_tables(params: UnifiedToolParams) -> dict:
         # left_on = extra_params.get("left_on")
         # right_on = extra_params.get("right_on")
         # how = extra_params.get("join_mode", "inner")
-        on = params.on
-        left_on = params.left_on
-        right_on = params.right_on
-        how = params.join_mode
+        on = params.get_param('on')
+        left_on = params.get_param('left_on')
+        right_on = params.get_param('right_on')
+        how = params.get_param('join_mode')
 
         if how not in ["left", "right", "outer", "inner"]:
             raise ValueError("连接模式不合法")
