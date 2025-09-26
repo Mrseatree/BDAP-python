@@ -67,16 +67,19 @@ class UnifiedToolParams(BaseModel):
 
     def ensure_output_path(self, suffix: str = "_processed"):
         """确保output_path存在，如果没有则自动生成"""
-        if not self.output_path:
-            base_name = os.path.splitext(self.file_path)[0]
-            self.output_path = f"{base_name}{suffix}.csv"
+        output_path = self.get_param('output_path')
+        if not output_path:
+            base_name, _ = os.path.splitext(self.file_path1)
+            output_path = f"{base_name}{suffix}.csv"
+
+        self.output_path = output_path
 
         # 确保输出目录存在
         output_dir = os.path.dirname(self.output_path)
         if output_dir and not os.path.exists(output_dir):
             os.makedirs(output_dir, exist_ok = True)
 
-        return self.output_path
+        return output_path
 
     def check_single_file(self):
         if not self.file_path1:
