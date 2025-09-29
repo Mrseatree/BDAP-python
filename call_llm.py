@@ -375,6 +375,9 @@ async def call_dify_with_local_files(model: str, query: str, local_file_path1: s
 
     timeout = httpx.Timeout(120.0, read=120.0, connect=10.0)
 
+    # 记录请求开始时间，用于后续筛选新生成的文件
+    request_start_ts = time.time()
+
     try:
         async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
             resp = await client.post(dify_url, headers=headers, json=data)
@@ -399,12 +402,34 @@ async def call_dify_with_local_files(model: str, query: str, local_file_path1: s
                 if expected_output and os.path.exists(expected_output):
                     return expected_output, answer
                 else:
-                    # 如果预期路径不存在，尝试从SHARED_DIR中找到最新的输出文件
-                    output_files = glob.glob(os.path.join(SHARED_DIR, "*_output_*.csv"))
-                    if output_files:
-                        # 返回最新创建的文件
-                        latest_file = max(output_files, key=os.path.getctime)
-                        return latest_file, answer
+                    # 如果预期路径不存在，尝试在共享目录中匹配可能的命名模式
+                    input_base = os.path.splitext(os.path.basename(local_file_path1))[0]
+                    search_patterns = [
+                        os.path.join(SHARED_DIR, f"*{input_base}*.csv"),   # 例如: 5a7f8489_test_data_filled.csv
+                        os.path.join(SHARED_DIR, "*_output_*.csv"),       # 例如: output_output_data_xxx.csv
+                        os.path.join(SHARED_DIR, "*.csv"),               # 匹配任意csv
+                    ]
+                    candidates: List[str] = []
+                    for pattern in search_patterns:
+                        try:
+                            candidates.extend(glob.glob(pattern))
+                        except Exception:
+                            pass
+
+                    # 去重并仅保留文件
+                    candidates = list({p for p in candidates if os.path.isfile(p)})
+
+                    if candidates:
+                        # 优先选择在本次请求开始之后新生成/修改的文件
+                        candidates_sorted = sorted(candidates, key=os.path.getctime, reverse=True)
+                        for path in candidates_sorted:
+                            try:
+                                if os.path.getctime(path) >= request_start_ts - 1:
+                                    return path, answer
+                            except Exception:
+                                continue
+                        # 如果没有明显在本次请求期间生成的文件，则返回最新的一个
+                        return candidates_sorted[0], answer
                     else:
                         raise HTTPException(status_code=500, detail="工具函数未生成预期的输出文件")
             else:
