@@ -7,7 +7,7 @@ subprocess.Popen(["uvicorn", "call_llm:app", "--host", "0.0.0.0", "--port", "800
 # 启动 queue_service（绑定8001端口）
 subprocess.Popen(["uvicorn", "queue_service:app", "--host", "0.0.0.0", "--port", "8001"])
 
-# 启动 tool_functions（绑定8002端口）
+# 启动 tool_functions（绑定8020-8024端口）
 tool_ports = [8020, 8021, 8022, 8023, 8024]
 for port in tool_ports:
     subprocess.Popen([
