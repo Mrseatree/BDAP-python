@@ -33,7 +33,7 @@ MODEL_TO_APIKEY = {
     "Qwen": "app-VH46JNigYuWdqf62sBucCOcw"
 }
 
-dify_url = "http://10.92.64.224/v1/chat-messages"
+dify_url = "http://127.0.0.1/v1/chat-messages"
 
 class ChatRequest(BaseModel):
     model: ModelName
