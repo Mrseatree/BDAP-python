@@ -205,7 +205,7 @@ class QueueManager:
                 print(f"发送请求到 call_llm 服务: {payload}")
                 
                 response = await client.post(
-                    "http://localhost:8000/llm",
+                    "http://localhost:8006/llm",
                     json=payload
                 )
 
@@ -310,7 +310,7 @@ class QueueManager:
                     "completedRequests": new_completed
                 }
 
-                java_backend_url = "http://localhost:7003/llm/update"
+                java_backend_url = "http://10.29.219.75:7003/llm/update"
 
                 async with httpx.AsyncClient(timeout=10.0) as client:
                     resp = await client.post(java_backend_url, json=payload)
