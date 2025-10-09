@@ -44,6 +44,8 @@ class UnifiedToolParams(BaseModel):
     left_on: Optional[str] = None
     right_on: Optional[str] = None
 
+    keep: Optional[str] = "first" #first/last/false
+
     def _parse_params(self) -> dict:
         """将字符串形式的params转换为字典"""
         try:
@@ -675,6 +677,85 @@ def join_tables(params: UnifiedToolParams) -> dict:
             "status":"error",
             "message":f"join 处理失败: {str(e)}"
         }
+
+
+@app.post("/tools/drop-empty-columns")
+def drop_empty_columns(params: UnifiedToolParams) -> dict:
+    import pandas as pd
+    try:
+        params.check_single_file()
+        df = pd.read_csv(params.file_path1)
+
+        cleaned_df = df.dropna(axis=1, how='all')  # 删除全为空的列
+        output_path = params.ensure_output_path("_no_empty_cols")
+        cleaned_df.to_csv(output_path, index=False)
+
+        return {
+            "status": "success",
+            "message": "已删除所有空白列",
+            "output_file": output_path
+        }
+    except Exception as e:
+        return {"status": "error", "message": f"删除空白列失败: {str(e)}"}
+
+
+@app.post("/tools/drop-duplicates-by-column")
+def drop_duplicates_by_column(params: UnifiedToolParams) -> dict:
+    import pandas as pd
+    try:
+        params.check_single_file()
+        df = pd.read_csv(params.file_path1)
+
+        column = params.get_param('column')
+        if not column:
+            raise ValueError("需要提供 column 参数")
+
+        # 支持传入逗号分隔的多列
+        if isinstance(column, str) and ',' in column:
+            subset = [c.strip() for c in column.split(',') if c.strip()]
+        elif isinstance(column, list):
+            subset = column
+        else:
+            subset = [column]
+
+        # 规范化 keep 参数：支持 'first','last' 或 False（并映射常见字符串）
+        keep = params.get_param('keep', 'first')
+        if isinstance(keep, str):
+            kl = keep.lower()
+            if kl in ('first', 'last'):
+                keep = kl
+            elif kl in ('none', 'false', 'no'):
+                keep = False
+            else:
+                raise ValueError("keep 参数不合法：应为 'first'/'last' 或 False")
+        elif isinstance(keep, bool):
+            # True 在语义上等同于 'first'（如果你希望把 True 当作 'first'）
+            keep = 'first' if keep else False
+        else:
+            raise ValueError("keep 参数类型不支持")
+
+        # 校验列是否存在
+        for c in subset:
+            if c not in df.columns:
+                raise ValueError(f"列 {c} 不存在")
+
+        cleaned_df = df.drop_duplicates(subset=subset, keep=keep)
+
+        # 可选：重置索引（按需）
+        # reset_index = params.get_param('reset_index', False)
+        # if reset_index:
+        #     cleaned_df = cleaned_df.reset_index(drop=True)
+
+        output_path = params.ensure_output_path(f"_dropdup_{'_'.join(subset)}")
+        cleaned_df.to_csv(output_path, index=False)
+
+        return {
+            "status": "success",
+            "message": f"已删除列 {','.join(subset)} 的重复值（keep={keep}）",
+            "output_file": output_path
+        }
+    except Exception as e:
+        return {"status": "error", "message": f"删除重复值失败: {str(e)}"}
 
 # def parse_file_content(file_content):
 #     if isinstance(file_content, str):
