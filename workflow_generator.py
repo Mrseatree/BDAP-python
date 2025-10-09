@@ -224,7 +224,7 @@ class WorkflowQueueManager:
     async def _push_single_result_to_java(self, result: WorkflowResult):
         """推送工作流结果到Java后端"""
         try:
-            callback_url = "http://localhost:7003/llm/result/experiment"
+            callback_url = "http://10.29.219.75:7003/llm/result/experiment"
             
             headers = {
                 "Content-Type": "application/json"
