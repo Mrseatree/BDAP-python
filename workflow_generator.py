@@ -32,18 +32,27 @@ class AsyncWorkflowResponse(BaseModel):
     status: str  # "processing", "completed", "failed"
     message: str
 
-# 更新工作流结果模型，增加更多状态类型
+# 工作流结果模型
 class WorkflowResult(BaseModel):
     requestId: str
+    status: str  # "success" or "error"
     conversation_id: Optional[str] = None
-    status: str  # "success", "error", "busy", "timeout" 等
     workflow_info: Optional[Dict[str, Any]] = None
     nodes: Optional[List[Dict[str, Any]]] = None
     error_message: Optional[str] = None
 
-# 更新后的模型定义 - 适配新的工作流结构
+# 更新后的模型定义
 class WorkflowInfo(BaseModel):
     userId: str
+
+class SimpleAttribute(BaseModel):
+    name: str
+    value: str
+    valueType: str
+
+class ComplicatedAttribute(BaseModel):
+    name: str
+    value: Dict[str, Any]
 
 class SourceAnchor(BaseModel):
     nodeName: str
@@ -67,7 +76,11 @@ class OutputAnchor(BaseModel):
 
 class Node(BaseModel):
     id: str
+    name: str
     mark: str                           # 组件唯一标识
+    position: List[int]
+    simpleAttributes: List[SimpleAttribute] = []
+    complicatedAttributes: List[ComplicatedAttribute] = []
     inputAnchors: List[InputAnchor] = []
     outputAnchors: List[OutputAnchor] = []
 
@@ -130,20 +143,6 @@ class WorkflowQueueManager:
         try:
             print(f"开始处理工作流请求 {request_data['requestId']}")
             
-            # 检查队列是否过载
-            if self.queues[model].qsize() > 10:  # 队列长度阈值
-                error_result = WorkflowResult(
-                    requestId=request_data["requestId"],
-                    status="busy",
-                    error_message="系统繁忙，请稍后再试"
-                )
-                
-                with self.completed_requests_lock:
-                    self.completed_requests[request_data["requestId"]] = error_result
-                
-                await self._push_single_result_to_java(error_result)
-                return
-            
             # 1. 调用大模型生成工作流
             llm_response, new_conversation_id = await call_dify_with_workflow(
                 model=model,
@@ -204,21 +203,6 @@ class WorkflowQueueManager:
             
             print(f"工作流请求 {request_data['requestId']} 处理成功")
             
-        except asyncio.TimeoutError:
-            error_msg = "工作流生成超时"
-            print(f"处理工作流请求 {request_data['requestId']} 时发生超时")
-            
-            error_result = WorkflowResult(
-                requestId=request_data["requestId"],
-                status="timeout",
-                error_message=error_msg
-            )
-            
-            with self.completed_requests_lock:
-                self.completed_requests[request_data["requestId"]] = error_result
-            
-            await self._push_single_result_to_java(error_result)
-            
         except Exception as e:
             error_msg = f"工作流生成失败: {str(e)}"
             print(f"处理工作流请求 {request_data['requestId']} 时发生错误: {error_msg}")
@@ -240,7 +224,7 @@ class WorkflowQueueManager:
     async def _push_single_result_to_java(self, result: WorkflowResult):
         """推送工作流结果到Java后端"""
         try:
-            callback_url = "http://10.29.219.75:7003/llm/result/experiment"
+            callback_url = "http://localhost:7003/llm/result/experiment"
             
             headers = {
                 "Content-Type": "application/json"
@@ -392,81 +376,120 @@ def parse_llm_response(llm_response: Any, user_id: str, service_type: str, reque
             if not isinstance(workflow_data, dict):
                 raise ValueError(f"解析的工作流数据不是字典类型，而是: {type(workflow_data)}")
             
-            # 构建新的工作流结构
-            new_workflow_structure = {
-                "requestId": request_id,
-                "conversation_id": conversation_id,
-                "status": "success",  # 默认状态
-                "workflow_info": {
-                    "userId": user_id or "anonymous"
-                },
-                "nodes": [],
-                "error_message": ""
-            }
+            if "workflow_info" not in workflow_data:
+                workflow_data["workflow_info"] = {}
             
-            # 转换节点数据到新格式
-            if "nodes" in workflow_data and isinstance(workflow_data["nodes"], list):
-                for i, old_node in enumerate(workflow_data["nodes"]):
-                    if not isinstance(old_node, dict):
-                        continue
-                    
-                    # 构建新格式的节点
-                    new_node = {
-                        "id": old_node.get("id", f"node_{i}"),
-                        "mark": old_node.get("mark", str(i)),  # 确保mark是字符串
-                        "inputAnchors": [],
-                        "outputAnchors": []
-                    }
-                    
-                    # 处理输入锚点
-                    if "inputAnchors" in old_node and isinstance(old_node["inputAnchors"], list):
-                        for j, input_anchor in enumerate(old_node["inputAnchors"]):
-                            if isinstance(input_anchor, dict):
-                                new_input_anchor = {
-                                    "seq": input_anchor.get("seq", j),
-                                    "numOfConnectedEdges": input_anchor.get("numOfConnectedEdges", 0)
-                                }
-                                
-                                # 处理源锚点
-                                if "sourceAnchor" in input_anchor and input_anchor["sourceAnchor"]:
-                                    source_data = input_anchor["sourceAnchor"]
-                                    new_input_anchor["sourceAnchor"] = {
-                                        "nodeName": source_data.get("nodeName", ""),
-                                        "nodeMark": int(source_data.get("nodeMark", 0)),
-                                        "seq": source_data.get("seq", 0)
-                                    }
-                                    new_input_anchor["numOfConnectedEdges"] = 1
-                                
-                                new_node["inputAnchors"].append(new_input_anchor)
-                    
-                    # 处理输出锚点
-                    if "outputAnchors" in old_node and isinstance(old_node["outputAnchors"], list):
-                        for j, output_anchor in enumerate(old_node["outputAnchors"]):
-                            if isinstance(output_anchor, dict):
-                                new_output_anchor = {
-                                    "seq": output_anchor.get("seq", j),
-                                    "numOfConnectedEdges": output_anchor.get("numOfConnectedEdges", 0),
-                                    "targetAnchors": []
-                                }
-                                
-                                # 处理目标锚点
-                                if "targetAnchors" in output_anchor and isinstance(output_anchor["targetAnchors"], list):
-                                    for k, target_anchor in enumerate(output_anchor["targetAnchors"]):
-                                        if isinstance(target_anchor, dict):
-                                            new_target_anchor = {
-                                                "nodeName": target_anchor.get("nodeName", ""),
-                                                "nodeMark": int(target_anchor.get("nodeMark", 0)),
-                                                "seq": target_anchor.get("seq", k)
-                                            }
-                                            new_output_anchor["targetAnchors"].append(new_target_anchor)
-                                    
-                                    new_output_anchor["numOfConnectedEdges"] = len(new_output_anchor["targetAnchors"])
-                                
-                                new_node["outputAnchors"].append(new_output_anchor)
-                    
-                    new_workflow_structure["nodes"].append(new_node)
+            if "nodes" not in workflow_data:
+                workflow_data["nodes"] = []
             
-            return new_workflow_structure
+            if not isinstance(workflow_data["nodes"], list):
+                raise ValueError(f"nodes字段不是列表类型，而是: {type(workflow_data['nodes'])}")
+            
+            workflow_data["requestId"] = request_id
+            workflow_data["conversation_id"] = conversation_id
+            
+            if not isinstance(workflow_data["workflow_info"], dict):
+                workflow_data["workflow_info"] = {}
+            workflow_data["workflow_info"]["userId"] = user_id or "anonymous"
+            
+            # 处理节点数据，适配新格式
+            for i, node in enumerate(workflow_data["nodes"]):
+                if not isinstance(node, dict):
+                    raise ValueError(f"节点{i}不是字典类型，而是: {type(node)}")
+                
+                # 确保必要字段存在
+                if "id" not in node:
+                    node["id"] = f"node_{i}"
+                
+                if "mark" not in node:
+                    node["mark"] = str(i)  # 使用字符串类型的mark
+                
+                if "position" not in node:
+                    node["position"] = [100 + i * 200, 100]
+                
+                # 处理position字段格式
+                if isinstance(node["position"], dict):
+                    if "x" in node["position"] and "y" in node["position"]:
+                        node["position"] = [node["position"]["x"], node["position"]["y"]]
+                
+                if "name" not in node:
+                    node["name"] = node.get("id", f"node_{i}")
+                
+                # 初始化属性列表
+                node.setdefault("simpleAttributes", [])
+                node.setdefault("complicatedAttributes", [])
+                node.setdefault("inputAnchors", [])
+                node.setdefault("outputAnchors", [])
+                
+                # 确保锚点是列表类型
+                if not isinstance(node["inputAnchors"], list):
+                    node["inputAnchors"] = []
+                if not isinstance(node["outputAnchors"], list):
+                    node["outputAnchors"] = []
+                
+                # 处理inputAnchors
+                for j, input_anchor in enumerate(node["inputAnchors"]):
+                    if isinstance(input_anchor, dict):
+                        # 添加seq字段
+                        input_anchor.setdefault("seq", j)
+                        input_anchor.setdefault("numOfConnectedEdges", 0)
+                        
+                        #  从sourceAnchors转换为sourceAnchor
+                        if "sourceAnchors" in input_anchor and input_anchor["sourceAnchors"]:
+                            if isinstance(input_anchor["sourceAnchors"], list) and len(input_anchor["sourceAnchors"]) > 0:
+                                old_source = input_anchor["sourceAnchors"][0]
+                                input_anchor["sourceAnchor"] = {
+                                    "nodeName": old_source.get("nodeName", old_source.get("id", "")),
+                                    "nodeMark": old_source.get("nodeMark", old_source.get("mark", 0)),
+                                    "seq": old_source.get("seq", 0)
+                                }
+                            input_anchor.pop("sourceAnchors", None)
+                        
+                        # 确保sourceAnchor包含所有必需字段
+                        if "sourceAnchor" in input_anchor and input_anchor["sourceAnchor"]:
+                            source_anchor = input_anchor["sourceAnchor"]
+                            source_anchor.setdefault("seq", 0)
+                            # 确保nodeMark是整数类型
+                            if "nodeMark" in source_anchor:
+                                try:
+                                    source_anchor["nodeMark"] = int(source_anchor["nodeMark"])
+                                except (ValueError, TypeError):
+                                    source_anchor["nodeMark"] = 0
+                            
+                            # 更新numOfConnectedEdges
+                            input_anchor["numOfConnectedEdges"] = 1 if input_anchor.get("sourceAnchor") else 0
+                
+                # 处理outputAnchors
+                for j, output_anchor in enumerate(node["outputAnchors"]):
+                    if isinstance(output_anchor, dict):
+                        # 添加seq字段
+                        output_anchor.setdefault("seq", j)
+                        output_anchor.setdefault("numOfConnectedEdges", 0)
+                        output_anchor.setdefault("targetAnchors", [])
+                        
+                        # 确保targetAnchors中的每个元素都有正确的格式和seq字段
+                        for k, target_anchor in enumerate(output_anchor["targetAnchors"]):
+                            if isinstance(target_anchor, dict):
+                                target_anchor.setdefault("nodeName", target_anchor.get("id", ""))
+                                target_anchor.setdefault("seq", k)
+                                
+                                # 处理nodeMark字段，从mark字段转换或设置默认值
+                                if "nodeMark" not in target_anchor:
+                                    target_anchor["nodeMark"] = target_anchor.get("mark", 0)
+                                
+                                # 确保nodeMark是整数类型
+                                try:
+                                    target_anchor["nodeMark"] = int(target_anchor["nodeMark"])
+                                except (ValueError, TypeError):
+                                    target_anchor["nodeMark"] = 0
+                                
+                                target_anchor.pop("mark", None)
+                                target_anchor.pop("id", None)
+                        
+                        # 更新numOfConnectedEdges为实际的目标锚点数量
+                        output_anchor["numOfConnectedEdges"] = len(output_anchor.get("targetAnchors", []))
+            
+            return workflow_data
         else:
             raise ValueError("LLM响应中未找到有效的JSON结构")
             
