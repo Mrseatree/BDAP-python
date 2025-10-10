@@ -32,14 +32,14 @@ class AsyncWorkflowResponse(BaseModel):
     status: str  # "processing", "completed", "failed"
     message: str
 
-# 工作流结果模型
+# 工作流结果模型 - 更新status类型
 class WorkflowResult(BaseModel):
     requestId: str
-    status: str  # "success" or "error"
+    status: str  # "success", "error", "busy", "timeout", "validation_failed"
     conversation_id: Optional[str] = None
     workflow_info: Optional[Dict[str, Any]] = None
     nodes: Optional[List[Dict[str, Any]]] = None
-    error_message: Optional[str] = None
+    error_message: Optional[str] = ""
 
 # 更新后的模型定义
 class WorkflowInfo(BaseModel):
@@ -76,11 +76,7 @@ class OutputAnchor(BaseModel):
 
 class Node(BaseModel):
     id: str
-    name: str
     mark: str                           # 组件唯一标识
-    position: List[int]
-    simpleAttributes: List[SimpleAttribute] = []
-    complicatedAttributes: List[ComplicatedAttribute] = []
     inputAnchors: List[InputAnchor] = []
     outputAnchors: List[OutputAnchor] = []
 
@@ -167,10 +163,11 @@ class WorkflowQueueManager:
             sanitized_workflow, warnings, errors = await validator.sanitize(workflow_structure)
             
             if sanitized_workflow is None:
-                # 创建失败结果
+                # 创建验证失败结果
                 error_result = WorkflowResult(
                     requestId=request_data["requestId"],
-                    status="error",
+                    status="validation_failed",
+                    conversation_id=new_conversation_id,
                     error_message=f"工作流结构校验失败: {', '.join(errors)}"
                 )
                 
@@ -191,7 +188,8 @@ class WorkflowQueueManager:
                 status="success",
                 conversation_id=new_conversation_id,
                 workflow_info=sanitized_workflow["workflow_info"],
-                nodes=sanitized_workflow["nodes"]
+                nodes=sanitized_workflow["nodes"],
+                error_message=""
             )
             
             # 缓存成功结果
@@ -203,9 +201,35 @@ class WorkflowQueueManager:
             
             print(f"工作流请求 {request_data['requestId']} 处理成功")
             
+        except ValueError as e:
+            error_msg = str(e)
+            status = "error"
+            
+            # 根据错误信息判断状态
+            if "超时" in error_msg or "timeout" in error_msg.lower():
+                status = "timeout"
+            elif "繁忙" in error_msg or "busy" in error_msg.lower():
+                status = "busy"
+            
+            print(f"处理工作流请求 {request_data['requestId']} 时发生错误: {error_msg}")
+            
+            # 创建失败结果
+            error_result = WorkflowResult(
+                requestId=request_data["requestId"],
+                status=status,
+                error_message=error_msg
+            )
+            
+            # 缓存失败结果
+            with self.completed_requests_lock:
+                self.completed_requests[request_data["requestId"]] = error_result
+            
+            # 立即推送失败结果
+            await self._push_single_result_to_java(error_result)
+            
         except Exception as e:
             error_msg = f"工作流生成失败: {str(e)}"
-            print(f"处理工作流请求 {request_data['requestId']} 时发生错误: {error_msg}")
+            print(f"处理工作流请求 {request_data['requestId']} 时发生未知错误: {error_msg}")
             
             # 创建失败结果
             error_result = WorkflowResult(
@@ -376,6 +400,7 @@ def parse_llm_response(llm_response: Any, user_id: str, service_type: str, reque
             if not isinstance(workflow_data, dict):
                 raise ValueError(f"解析的工作流数据不是字典类型，而是: {type(workflow_data)}")
             
+            # 初始化基本结构
             if "workflow_info" not in workflow_data:
                 workflow_data["workflow_info"] = {}
             
@@ -392,7 +417,7 @@ def parse_llm_response(llm_response: Any, user_id: str, service_type: str, reque
                 workflow_data["workflow_info"] = {}
             workflow_data["workflow_info"]["userId"] = user_id or "anonymous"
             
-            # 处理节点数据，适配新格式
+            # 处理节点数据 - 移除不需要的字段，只保留必要字段
             for i, node in enumerate(workflow_data["nodes"]):
                 if not isinstance(node, dict):
                     raise ValueError(f"节点{i}不是字典类型，而是: {type(node)}")
@@ -402,22 +427,15 @@ def parse_llm_response(llm_response: Any, user_id: str, service_type: str, reque
                     node["id"] = f"node_{i}"
                 
                 if "mark" not in node:
-                    node["mark"] = str(i)  # 使用字符串类型的mark
+                    node["mark"] = str(i)
                 
-                if "position" not in node:
-                    node["position"] = [100 + i * 200, 100]
+                # 移除不需要的字段
+                node.pop("name", None)
+                node.pop("position", None)
+                node.pop("simpleAttributes", None)
+                node.pop("complicatedAttributes", None)
                 
-                # 处理position字段格式
-                if isinstance(node["position"], dict):
-                    if "x" in node["position"] and "y" in node["position"]:
-                        node["position"] = [node["position"]["x"], node["position"]["y"]]
-                
-                if "name" not in node:
-                    node["name"] = node.get("id", f"node_{i}")
-                
-                # 初始化属性列表
-                node.setdefault("simpleAttributes", [])
-                node.setdefault("complicatedAttributes", [])
+                # 初始化锚点列表
                 node.setdefault("inputAnchors", [])
                 node.setdefault("outputAnchors", [])
                 
@@ -430,11 +448,9 @@ def parse_llm_response(llm_response: Any, user_id: str, service_type: str, reque
                 # 处理inputAnchors
                 for j, input_anchor in enumerate(node["inputAnchors"]):
                     if isinstance(input_anchor, dict):
-                        # 添加seq字段
                         input_anchor.setdefault("seq", j)
                         input_anchor.setdefault("numOfConnectedEdges", 0)
                         
-                        #  从sourceAnchors转换为sourceAnchor
                         if "sourceAnchors" in input_anchor and input_anchor["sourceAnchors"]:
                             if isinstance(input_anchor["sourceAnchors"], list) and len(input_anchor["sourceAnchors"]) > 0:
                                 old_source = input_anchor["sourceAnchors"][0]
@@ -449,6 +465,7 @@ def parse_llm_response(llm_response: Any, user_id: str, service_type: str, reque
                         if "sourceAnchor" in input_anchor and input_anchor["sourceAnchor"]:
                             source_anchor = input_anchor["sourceAnchor"]
                             source_anchor.setdefault("seq", 0)
+                            
                             # 确保nodeMark是整数类型
                             if "nodeMark" in source_anchor:
                                 try:
@@ -456,13 +473,12 @@ def parse_llm_response(llm_response: Any, user_id: str, service_type: str, reque
                                 except (ValueError, TypeError):
                                     source_anchor["nodeMark"] = 0
                             
-                            # 更新numOfConnectedEdges
+                            # 更新连接边数量
                             input_anchor["numOfConnectedEdges"] = 1 if input_anchor.get("sourceAnchor") else 0
                 
                 # 处理outputAnchors
                 for j, output_anchor in enumerate(node["outputAnchors"]):
                     if isinstance(output_anchor, dict):
-                        # 添加seq字段
                         output_anchor.setdefault("seq", j)
                         output_anchor.setdefault("numOfConnectedEdges", 0)
                         output_anchor.setdefault("targetAnchors", [])
@@ -473,7 +489,7 @@ def parse_llm_response(llm_response: Any, user_id: str, service_type: str, reque
                                 target_anchor.setdefault("nodeName", target_anchor.get("id", ""))
                                 target_anchor.setdefault("seq", k)
                                 
-                                # 处理nodeMark字段，从mark字段转换或设置默认值
+                                # 处理nodeMark字段
                                 if "nodeMark" not in target_anchor:
                                     target_anchor["nodeMark"] = target_anchor.get("mark", 0)
                                 
@@ -483,10 +499,11 @@ def parse_llm_response(llm_response: Any, user_id: str, service_type: str, reque
                                 except (ValueError, TypeError):
                                     target_anchor["nodeMark"] = 0
                                 
+                                # 移除旧字段
                                 target_anchor.pop("mark", None)
                                 target_anchor.pop("id", None)
                         
-                        # 更新numOfConnectedEdges为实际的目标锚点数量
+                        # 更新连接边数量
                         output_anchor["numOfConnectedEdges"] = len(output_anchor.get("targetAnchors", []))
             
             return workflow_data
