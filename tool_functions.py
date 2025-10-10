@@ -190,7 +190,8 @@ def fill_missing_with_mean(params: UnifiedToolParams) -> dict:
         # df = pd.DataFrame.from_records(data)
         df = pd.read_csv(params.file_path1)
 
-        df = df.fillna(df.mean(numeric_only = True))
+        mean = df.mean(numeric_only = True)
+        df = df.fillna(mean)
 
         # 自动生成output_path
         output_path = params.ensure_output_path("_filled_mean")
@@ -271,7 +272,12 @@ def fill_missing_with_constant(params: UnifiedToolParams) -> dict:
         if constant_value is None:
             raise ValueError("需要提供constant_value或value参数")
 
-        df = df.fillna(constant_value)
+        column = params.get_param('column')
+        if column is None:
+            df = df.fillna(constant_value)
+        else:
+            df[column] = df[column].fillna(constant_value)
+
 
         # 自动生成output_path
         output_path = params.ensure_output_path("_filled_constant")
@@ -295,36 +301,30 @@ def fill_missing_with_mode(params: UnifiedToolParams) -> dict:
     import pandas as pd
     try:
         params.check_single_file()
-        # raw = params.file_content1
-        # print("raw:", raw, type(raw))
-
-        # data = json.loads(raw)
-        # print("after 1st loads:", data, type(data))
-
-        # 如果还是 str，再转第二次
-        # if isinstance(data, str):
-        #     data = json.loads(data)
-
-        # print("final data:", data, type(data))
-        # df = pd.DataFrame.from_records(data)
         df = pd.read_csv(params.file_path1)
 
-        df = df.fillna(df.mode().iloc[0])
+        # 对每一列分别计算众数并填充
+        for col in df.columns:
+            try:
+                mode_val = df[col].mode(dropna=True)
+                if not mode_val.empty:
+                    df[col].fillna(mode_val.iloc[0], inplace=True)
+            except Exception:
+                # 某些混合类型列可能无法计算众数，跳过
+                continue
 
-        # 自动生成output_path
         output_path = params.ensure_output_path("_filled_mode")
+        df.to_csv(output_path, index=False)
 
-        df.to_csv(output_path, index = False)
         return {
-            "status":"success",
-            "message":"已使用众数填补缺失值",
-            "output_file":output_path
-            # "output_data":df.to_dict(orient = "records")
+            "status": "success",
+            "message": "已使用众数填补缺失值",
+            "output_file": output_path
         }
     except Exception as e:
         return {
-            "status":"error",
-            "message":f"使用众数填补缺失值处理失败:{str(e)}"
+            "status": "error",
+            "message": f"使用众数填补缺失值处理失败: {str(e)}"
         }
 
 
@@ -351,6 +351,12 @@ def filter_by_column(params: UnifiedToolParams) -> dict:
         condition = params.get_param('condition')
         value = params.get_param('value')
 
+        col_dtype = df[column].dtype
+        if pd.api.types.is_numeric_dtype(col_dtype):
+            value = float(value)  # 对整数也可以用 float
+        elif pd.api.types.is_bool_dtype(col_dtype):
+            value = bool(value)
+
         if not column or not condition or value is None:
             raise ValueError("需要提供column、condition和value参数")
 
@@ -370,7 +376,11 @@ def filter_by_column(params: UnifiedToolParams) -> dict:
             raise ValueError("不支持的条件")
 
         # 自动生成output_path
-        output_path = params.ensure_output_path(f"_filtered_{column}_{condition}_{value}")
+        safe_condition = condition.replace(">=", "_ge_").replace("<=", "_le_") \
+            .replace(">", "_gt_").replace("<", "_lt_") \
+            .replace("==", "_eq_").replace("!=", "_ne_")
+
+        output_path = params.ensure_output_path(f"_filtered_{column}{safe_condition}{value}")
 
         df.to_csv(output_path, index = False)
         return {
@@ -718,7 +728,7 @@ def drop_duplicates_by_column(params: UnifiedToolParams) -> dict:
         else:
             subset = [column]
 
-        # 规范化 keep 参数：支持 'first','last' 或 False（并映射常见字符串）
+        # 规范化 keep 参数：支持 'first','last' 或 False
         keep = params.get_param('keep', 'first')
         if isinstance(keep, str):
             kl = keep.lower()
@@ -729,7 +739,7 @@ def drop_duplicates_by_column(params: UnifiedToolParams) -> dict:
             else:
                 raise ValueError("keep 参数不合法：应为 'first'/'last' 或 False")
         elif isinstance(keep, bool):
-            # True 在语义上等同于 'first'（如果你希望把 True 当作 'first'）
+            # True 在语义上等同于 'first'
             keep = 'first' if keep else False
         else:
             raise ValueError("keep 参数类型不支持")
@@ -741,7 +751,7 @@ def drop_duplicates_by_column(params: UnifiedToolParams) -> dict:
 
         cleaned_df = df.drop_duplicates(subset=subset, keep=keep)
 
-        # 可选：重置索引（按需）
+        # 可选：重置索引
         # reset_index = params.get_param('reset_index', False)
         # if reset_index:
         #     cleaned_df = cleaned_df.reset_index(drop=True)
