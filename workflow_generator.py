@@ -97,7 +97,7 @@ class WorkflowQueueManager:
         self.completed_requests_lock = threading.Lock()
 
         # 初始化支持的模型队列
-        for model in ["silicon-flow", "moonshot"]:
+        for model in ["silicon-flow", "moonshot", "deepseek", "Qwen"]:
             self.queues[model] = Queue()
             self.processing_count[model] = 0
             self.start_workers(model)
