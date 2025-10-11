@@ -15,6 +15,9 @@ import asyncio
 
 app = FastAPI()
 
+# 每个模型的工作线程数
+NUM_WORKERS_PER_MODEL = 3  
+
 # 请求模型
 class WorkflowGenerationRequest(BaseModel):
     model: str                          # 模型名称
@@ -82,11 +85,12 @@ class Node(BaseModel):
 
 
 class WorkflowQueueManager:
-    def __init__(self):
+    def __init__(self, num_workers_per_model: int = NUM_WORKERS_PER_MODEL):
+        self.num_workers_per_model = num_workers_per_model
         self.queues: Dict[str, Queue] = {}
         self.processing_count: Dict[str, int] = {}
         self.completed_requests: Dict[str, WorkflowResult] = {}
-        self.workers: Dict[str, threading.Thread] = {}
+        self.workers: Dict[str, List[threading.Thread]] = {}  # 改为存储线程列表
         self.running = True
         
         # 添加锁来保护 completed_requests
@@ -96,23 +100,33 @@ class WorkflowQueueManager:
         for model in ["silicon-flow", "moonshot"]:
             self.queues[model] = Queue()
             self.processing_count[model] = 0
-            self.start_worker(model)
+            self.start_workers(model)
 
-    def start_worker(self, model: str):
-        """启动指定模型的工作线程"""
-        worker = threading.Thread(target=self._worker, args=(model,), daemon=True)
-        worker.start()
-        self.workers[model] = worker
-        print(f"启动工作流 {model} 模型的工作线程")
+    def start_workers(self, model: str):
+        """为指定模型启动多个工作线程"""
+        if model not in self.workers:
+            self.workers[model] = []
+        
+        for i in range(self.num_workers_per_model):
+            worker = threading.Thread(
+                target=self._worker, 
+                args=(model, i), 
+                daemon=True,
+                name=f"{model}-worker-{i}"
+            )
+            worker.start()
+            self.workers[model].append(worker)
+            print(f"启动工作线程: {model}-worker-{i}")
 
-    def _worker(self, model: str):
+    def _worker(self, model: str, worker_id: int):
         """工作线程处理队列中的工作流请求"""
-        print(f"启动工作流 {model} 模型的工作线程")
+        print(f"工作线程 {model}-worker-{worker_id} 已启动")
+        
         while self.running:
             try:
                 if not self.queues[model].empty():
                     request_data = self.queues[model].get(timeout=1)
-                    print(f"工作流工作线程获取到请求: {request_data['requestId']}")
+                    print(f"[{model}-worker-{worker_id}] 获取到请求: {request_data['requestId']}")
                     
                     self.processing_count[model] += 1
                     
@@ -121,7 +135,7 @@ class WorkflowQueueManager:
                     asyncio.set_event_loop(loop)
                     
                     try:
-                        loop.run_until_complete(self._process_workflow_request(request_data, model))
+                        loop.run_until_complete(self._process_workflow_request(request_data, model, worker_id))
                     finally:
                         loop.close()
                     
@@ -130,14 +144,14 @@ class WorkflowQueueManager:
                 else:
                     time.sleep(0.1)
             except Exception as e:
-                print(f"工作流工作线程错误: {e}")
+                print(f"[{model}-worker-{worker_id}] 工作线程错误: {e}")
                 if model in self.processing_count:
                     self.processing_count[model] = max(0, self.processing_count[model] - 1)
                 continue
 
-    async def _process_workflow_request(self, request_data: dict, model: str):
+    async def _process_workflow_request(self, request_data: dict, model: str, worker_id: int):
         try:
-            print(f"开始处理工作流请求 {request_data['requestId']}")
+            print(f"[{model}-worker-{worker_id}] 开始处理工作流请求 {request_data['requestId']}")
             
             # 1. 调用大模型生成工作流
             llm_response, new_conversation_id = await call_dify_with_workflow(
@@ -177,10 +191,11 @@ class WorkflowQueueManager:
                 
                 # 立即推送失败结果
                 await self._push_single_result_to_java(error_result)
+                print(f"[{model}-worker-{worker_id}] 工作流 {request_data['requestId']} 校验失败")
                 return
             
             if warnings:
-                print(f"工作流校验警告: {', '.join(warnings)}")
+                print(f"[{model}-worker-{worker_id}] 工作流校验警告: {', '.join(warnings)}")
             
             # 4. 创建成功结果
             result = WorkflowResult(
@@ -199,7 +214,7 @@ class WorkflowQueueManager:
             # 立即推送成功结果
             await self._push_single_result_to_java(result)
             
-            print(f"工作流请求 {request_data['requestId']} 处理成功")
+            print(f"[{model}-worker-{worker_id}] 工作流请求 {request_data['requestId']} 处理成功")
             
         except ValueError as e:
             error_msg = str(e)
@@ -211,7 +226,7 @@ class WorkflowQueueManager:
             elif "繁忙" in error_msg or "busy" in error_msg.lower():
                 status = "busy"
             
-            print(f"处理工作流请求 {request_data['requestId']} 时发生错误: {error_msg}")
+            print(f"[{model}-worker-{worker_id}] 处理工作流请求 {request_data['requestId']} 时发生错误: {error_msg}")
             
             # 创建失败结果
             error_result = WorkflowResult(
@@ -229,7 +244,7 @@ class WorkflowQueueManager:
             
         except Exception as e:
             error_msg = f"工作流生成失败: {str(e)}"
-            print(f"处理工作流请求 {request_data['requestId']} 时发生未知错误: {error_msg}")
+            print(f"[{model}-worker-{worker_id}] 处理工作流请求 {request_data['requestId']} 时发生未知错误: {error_msg}")
             
             # 创建失败结果
             error_result = WorkflowResult(
@@ -289,7 +304,7 @@ class WorkflowQueueManager:
             print(f"创建新的工作流队列和工作线程: {request.model}")
             self.queues[request.model] = Queue()
             self.processing_count[request.model] = 0
-            self.start_worker(request.model)
+            self.start_workers(request.model)
 
         self.queues[request.model].put(request_data)
         queue_size = self.queues[request.model].qsize()
@@ -517,7 +532,7 @@ def parse_llm_response(llm_response: Any, user_id: str, service_type: str, reque
 
 
 # 创建全局工作流队列管理器
-workflow_queue_manager = WorkflowQueueManager()
+workflow_queue_manager = WorkflowQueueManager(num_workers_per_model=NUM_WORKERS_PER_MODEL)
 
 @app.on_event("startup")
 async def startup_event():
@@ -588,10 +603,12 @@ async def get_workflow_queue_status():
     status = {
         "queueLength": total_queue_length,
         "processingCount": total_processing_count,
+        "numWorkersPerModel": workflow_queue_manager.num_workers_per_model,
         "modelQueues": {
             model: {
                 "queueLength": queue.qsize(),
-                "processingCount": workflow_queue_manager.processing_count[model]
+                "processingCount": workflow_queue_manager.processing_count[model],
+                "numWorkers": len(workflow_queue_manager.workers.get(model, []))
             } for model, queue in workflow_queue_manager.queues.items()
         }
     }
