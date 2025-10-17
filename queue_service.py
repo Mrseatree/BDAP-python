@@ -18,6 +18,10 @@ import os
 import atexit
 
 
+# 每个模型启动的工作线程数
+WORKER_THREADS_PER_MODEL = 20
+
+
 class ProcessRequest(BaseModel):
     requestId: str
     model: str
@@ -103,19 +107,21 @@ class QueueManager:
         self.queues: Dict[str, Queue] = {}
         self.processing_count: Dict[str, int] = {}
         self.completed_requests: Dict[str, dict] = {}
-        self.workers: Dict[str, threading.Thread] = {}
+        self.workers: Dict[str, List[threading.Thread]] = {}
         self.running = True
         self.pushed_request_ids: set = set()
         self.push_lock = threading.Lock()
         
-        # 添加锁来保护 completed_requests
+        # 添加锁来保护 completed_requests 和 processing_count
         self.completed_requests_lock = threading.Lock()
+        self.processing_count_lock = threading.Lock()
 
         # 初始化支持的模型
-        for model in ["silicon-flow", "moonshot"]:
+        for model in ["silicon-flow", "moonshot", "deepseek", "Qwen"]:
             self.queues[model] = Queue()
             self.processing_count[model] = 0
-            self.start_worker(model)
+            self.workers[model] = []
+            self.start_workers(model)
 
     def start_background_push_loop(self):
         """启动后台推送任务"""
@@ -127,45 +133,56 @@ class QueueManager:
         push_thread = threading.Thread(target=run_push_loop, daemon=True)
         push_thread.start()
 
-    def start_worker(self, model: str):
-        worker = threading.Thread(target=self._worker, args=(model,), daemon=True)
-        worker.start()
-        self.workers[model] = worker
+    def start_workers(self, model: str):
+        """为指定模型启动多个工作线程"""
+        for i in range(WORKER_THREADS_PER_MODEL):
+            worker = threading.Thread(
+                target=self._worker,
+                args=(model, i),
+                daemon=True,
+                name=f"{model}-worker-{i}"
+            )
+            worker.start()
+            self.workers[model].append(worker)
+        print(f"为模型 {model} 启动了 {WORKER_THREADS_PER_MODEL} 个工作线程")
 
-    def _worker(self, model: str):
+    def _worker(self, model: str, worker_id: int):
         """工作线程处理队列中的请求"""
-        print(f"启动 {model} 模型的工作线程")
+        print(f"启动 {model} 模型的工作线程 #{worker_id}")
         while self.running:
             try:
                 if not self.queues[model].empty():
                     request_data = self.queues[model].get(timeout=1)
-                    print(f"工作线程获取到请求: {request_data['requestId']}")
+                    print(f"[{model}-worker-{worker_id}] 获取到请求: {request_data['requestId']}")
                     
-                    self.processing_count[model] += 1
+                    with self.processing_count_lock:
+                        self.processing_count[model] += 1
                     
                     # 创建新的事件循环来处理异步请求
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
                     
                     try:
-                        loop.run_until_complete(self._process_request(request_data, model))
+                        loop.run_until_complete(self._process_request(request_data, model, worker_id))
                     finally:
                         loop.close()
                     
-                    self.processing_count[model] -= 1
+                    with self.processing_count_lock:
+                        self.processing_count[model] = max(0, self.processing_count[model] - 1)
+                    
                     self.queues[model].task_done()
                 else:
                     time.sleep(0.1)
             except Exception as e:
-                print(f"工作线程错误: {e}")
-                if model in self.processing_count:
+                print(f"[{model}-worker-{worker_id}] 工作线程错误: {e}")
+                with self.processing_count_lock:
                     self.processing_count[model] = max(0, self.processing_count[model] - 1)
                 continue
 
-    async def _process_request(self, request_data: dict, model: str):
+    async def _process_request(self, request_data: dict, model: str, worker_id: int):
         """处理单个请求"""
         try:
-            print(f"开始处理请求 {request_data['requestId']}")
+            print(f"[{model}-worker-{worker_id}] 开始处理请求 {request_data['requestId']}")
             
             question = request_data["prompt"].strip()
             
@@ -202,14 +219,14 @@ class QueueManager:
                     "conversation_id": request_data.get("conversation_id")
                 }
                 
-                print(f"发送请求到 call_llm 服务: {payload}")
+                print(f"[{model}-worker-{worker_id}] 发送请求到 call_llm 服务: {payload['requestId']}")
                 
                 response = await client.post(
                     "http://localhost:8006/llm",
                     json=payload
                 )
 
-            print(f"call_llm 服务响应状态码: {response.status_code}")
+            print(f"[{model}-worker-{worker_id}] call_llm 服务响应状态码: {response.status_code}")
             
             if response.status_code == 200:
                 result_data = response.json()
@@ -227,10 +244,10 @@ class QueueManager:
                         "conversation_id": conversation_id
                     }
                 
-                print(f"请求 {request_data['requestId']} 处理成功")
+                print(f"[{model}-worker-{worker_id}] 请求 {request_data['requestId']} 处理成功")
             else:
                 error_msg = f"[HTTP错误] 状态码: {response.status_code}, 内容: {response.text}"
-                print(f"call_llm 服务错误: {error_msg}")
+                print(f"[{model}-worker-{worker_id}] call_llm 服务错误: {error_msg}")
                 
                 with self.completed_requests_lock:
                     self.completed_requests[request_data["requestId"]] = {
@@ -244,7 +261,7 @@ class QueueManager:
                     
         except Exception as e:
             error_msg = f"Processing failed: {str(e)}"
-            print(f"处理请求 {request_data['requestId']} 时发生错误: {error_msg}")
+            print(f"[{model}-worker-{worker_id}] 处理请求 {request_data['requestId']} 时发生错误: {error_msg}")
             
             with self.completed_requests_lock:
                 self.completed_requests[request_data["requestId"]] = {
@@ -270,7 +287,8 @@ class QueueManager:
             print(f"创建新的队列和工作线程: {request.model}")
             self.queues[request.model] = Queue()
             self.processing_count[request.model] = 0
-            self.start_worker(request.model)
+            self.workers[request.model] = []
+            self.start_workers(request.model)
 
         self.queues[request.model].put(request_data)
         queue_size = self.queues[request.model].qsize()
@@ -310,7 +328,7 @@ class QueueManager:
                     "completedRequests": new_completed
                 }
 
-                java_backend_url = "http://10.29.219.75:7003/llm/update"
+                java_backend_url = "http://localhost:7003/llm/update"
 
                 async with httpx.AsyncClient(timeout=10.0) as client:
                     resp = await client.post(java_backend_url, json=payload)
@@ -399,9 +417,10 @@ async def get_result(request_id: str):
 async def get_queue_status():
     queueLength = 0
     processingCount = 0
-    for model, queue in queue_manager.queues.items():
-        queueLength += queue.qsize()
-        processingCount += queue_manager.processing_count[model]
+    with queue_manager.processing_count_lock:
+        for model, queue in queue_manager.queues.items():
+            queueLength += queue.qsize()
+            processingCount += queue_manager.processing_count[model]
     
     status = {"queueLength": queueLength, "processingCount": processingCount}
     print(f"队列状态: {status}")
