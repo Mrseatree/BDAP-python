@@ -46,6 +46,9 @@ class UnifiedToolParams(BaseModel):
 
     keep: Optional[str] = "first" #first/last/false
 
+    # 指定单元格的分隔符
+    sep: Optional[str] = None
+
     def _parse_params(self) -> dict:
         """将字符串形式的params转换为字典"""
         try:
@@ -766,6 +769,60 @@ def drop_duplicates_by_column(params: UnifiedToolParams) -> dict:
         }
     except Exception as e:
         return {"status": "error", "message": f"删除重复值失败: {str(e)}"}
+
+
+@app.post("/tools/drop-duplicates-in-cell")
+def drop_duplicates_in_cell(params: UnifiedToolParams) -> dict:
+    import pandas as pd
+    try:
+        params.check_single_file()
+
+        # 自动检测分隔符，去掉 BOM
+        try:
+            df = pd.read_csv(params.file_path1, sep=None, engine='python', encoding='utf-8-sig')
+        except Exception:
+            # 兼容只有一列、无明显分隔符的文件
+            df = pd.read_csv(params.file_path1, header=0, names=['姓名'], encoding='utf-8-sig')
+
+        column = params.get_param('column')
+        if not column:
+            raise ValueError("需要提供 column 参数")
+
+        # 去除列名中的空格/BOM
+        df.columns = [c.strip().replace('\ufeff', '') for c in df.columns]
+
+        if column not in df.columns:
+            raise ValueError(f"列 {column} 不存在，实际列名为：{list(df.columns)}")
+
+        sep = str(params.get_param('sep', ','))
+
+        def remove_duplicates_in_cell(cell):
+            if pd.isna(cell):
+                return cell
+            text = str(cell).replace('，', ',')
+            items = [x.strip() for x in text.split(sep) if x.strip()]
+            seen = set()
+            unique_items = []
+            for item in items:
+                if item not in seen:
+                    seen.add(item)
+                    unique_items.append(item)
+            return sep.join(unique_items)
+
+        df[column] = df[column].apply(remove_duplicates_in_cell)
+
+        output_path = params.ensure_output_path(f"_cell_dropdup_{column}")
+        df.to_csv(output_path, index=False, encoding='utf-8-sig')
+
+        return {
+            "status": "success",
+            "message": f"已对列 {column} 的单元格内容进行去重（按分隔符 '{sep}'）",
+            "output_file": output_path
+        }
+
+    except Exception as e:
+        return {"status": "error", "message": f"单元格去重失败: {str(e)}"}
+
 
 # def parse_file_content(file_content):
 #     if isinstance(file_content, str):
