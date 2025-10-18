@@ -118,13 +118,14 @@ class WorkflowQueueManager:
 
     async def start_workers(self, model: str):
         """为指定模型启动多个异步工作任务"""
+        loop = asyncio.get_event_loop()
         for i in range(self.num_workers_per_model):
-            task = asyncio.create_task(self._worker(model, i))
+            task = loop.create_task(self._worker(model, i))
             self.worker_tasks[model].append(task)
             print(f"启动异步工作任务: {model}-worker-{i}")
         
         # 启动重试工作任务
-        retry_task = asyncio.create_task(self._retry_worker(model))
+        retry_task = loop.create_task(self._retry_worker(model))
         self.retry_tasks[model] = retry_task
         print(f"启动重试工作任务: {model}-retry-worker")
 
@@ -342,7 +343,7 @@ class WorkflowQueueManager:
     async def _push_single_result_to_java(self, result: WorkflowResult):
         """推送工作流结果到Java后端"""
         try:
-            callback_url = "http://10.92.64.219:7003/llm/result/experiment"
+            callback_url = "http://localhost:7003/llm/result/experiment"
             
             headers = {
                 "Content-Type": "application/json"
