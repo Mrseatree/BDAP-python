@@ -1,12 +1,11 @@
-import fastapi
-from fastapi import FastAPI
-from consul_utils import register_service, deregister_service
-from config import SERVICE_NAME
-from typing import Optional, Union, Any, List
-from pydantic import BaseModel
-import atexit
-import os
 import json
+import os
+from typing import Optional, Union
+
+from fastapi import FastAPI
+from pydantic import BaseModel
+
+from consul_utils import register_service, deregister_service
 
 app = FastAPI()
 
@@ -629,7 +628,6 @@ def sort_by_column(params: UnifiedToolParams) -> dict:
 @app.post("/tools/join_tables")
 def join_tables(params: UnifiedToolParams) -> dict:
     import pandas as pd
-    import json
     try:
         # 1. 读取文件内容
         params.check_multi_files()
@@ -777,51 +775,61 @@ def drop_duplicates_in_cell(params: UnifiedToolParams) -> dict:
     try:
         params.check_single_file()
 
-        # 自动检测分隔符，去掉 BOM
-        try:
-            df = pd.read_csv(params.file_path1, sep=None, engine='python', encoding='utf-8-sig')
-        except Exception:
-            # 兼容只有一列、无明显分隔符的文件
-            df = pd.read_csv(params.file_path1, header=0, names=['姓名'], encoding='utf-8-sig')
+        # 用 delim_whitespace=True 自动识别多空格
+        # try:
+        df = pd.read_csv(params.file_path1, encoding = 'gbk')
+        # except Exception:
+            # df = pd.read_csv(params.file_path1, delim_whitespace=True, encoding='utf-8-sig')
 
         column = params.get_param('column')
         if not column:
             raise ValueError("需要提供 column 参数")
 
-        # 去除列名中的空格/BOM
-        df.columns = [c.strip().replace('\ufeff', '') for c in df.columns]
+        # 清理列名
+        # df.columns = [c.strip().replace('\ufeff', '') for c in df.columns]
 
         if column not in df.columns:
             raise ValueError(f"列 {column} 不存在，实际列名为：{list(df.columns)}")
 
-        sep = str(params.get_param('sep', ','))
-
-        def remove_duplicates_in_cell(cell):
+        def remove_duplicates_in_cell(cell,sep=params.get_param('sep')):
             if pd.isna(cell):
                 return cell
-            text = str(cell).replace('，', ',')
-            items = [x.strip() for x in text.split(sep) if x.strip()]
+
+            items = [x.strip() for x in cell.split(",")]  # 去掉空项
+
+            # 去重（保留顺序）
             seen = set()
             unique_items = []
             for item in items:
                 if item not in seen:
                     seen.add(item)
                     unique_items.append(item)
+            # 用单个空格连接
             return sep.join(unique_items)
+
+        # 测试单行输入
+        # row = df.iloc[0]  # 第一行所有列
+        # test_line = ' '.join(row.dropna().astype(str))  # 拼成一个字符串
+        # result = remove_duplicates_in_cell(test_line)
+        # print("处理前:", test_line)
+        # print("处理后:", result)
 
         df[column] = df[column].apply(remove_duplicates_in_cell)
 
         output_path = params.ensure_output_path(f"_cell_dropdup_{column}")
-        df.to_csv(output_path, index=False, encoding='utf-8-sig')
+        df.to_csv(output_path, index=False)
 
         return {
             "status": "success",
-            "message": f"已对列 {column} 的单元格内容进行去重（按分隔符 '{sep}'）",
+            "message": f"已对列 {column} 的单元格内容进行去重（自动识别多空格分隔）",
             "output_file": output_path
         }
 
     except Exception as e:
         return {"status": "error", "message": f"单元格去重失败: {str(e)}"}
+
+
+
 
 
 # def parse_file_content(file_content):
