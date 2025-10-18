@@ -4,8 +4,7 @@ from typing import Optional, List, Dict, Any
 import json
 import httpx
 import asyncio
-import threading
-from queue import Queue, PriorityQueue
+from queue import PriorityQueue
 import time
 from consul_utils import register_service, deregister_service
 from config import SERVICE_NAME
@@ -14,8 +13,8 @@ from call_llm import call_dify
 
 app = FastAPI()
 
-# 每个模型的工作线程数
-NUM_WORKERS_PER_MODEL = 20 
+# 每个模型的并发任务数
+NUM_WORKERS_PER_MODEL = 30 
 
 # 重传机制配置
 MAX_RETRIES = 3  # 最大重试次数
@@ -101,132 +100,107 @@ class Node(BaseModel):
 class WorkflowQueueManager:
     def __init__(self, num_workers_per_model: int = NUM_WORKERS_PER_MODEL):
         self.num_workers_per_model = num_workers_per_model
-        self.queues: Dict[str, Queue] = {}
-        self.retry_queues: Dict[str, PriorityQueue] = {}  # 重试队列
+        self.pending_queues: Dict[str, asyncio.Queue] = {}
+        self.retry_queues: Dict[str, PriorityQueue] = {}
         self.processing_count: Dict[str, int] = {}
         self.completed_requests: Dict[str, WorkflowResult] = {}
-        self.workers: Dict[str, List[threading.Thread]] = {}
-        self.retry_workers: Dict[str, List[threading.Thread]] = {}  # 重试工作线程
+        self.worker_tasks: Dict[str, List[asyncio.Task]] = {}
+        self.retry_tasks: Dict[str, asyncio.Task] = {}
         self.running = True
+        self.lock = asyncio.Lock()
         
-        # 添加锁
-        self.completed_requests_lock = threading.Lock()
-
         # 初始化支持的模型队列
         for model in ["silicon-flow", "moonshot", "deepseek", "Qwen"]:
-            self.queues[model] = Queue()
+            self.pending_queues[model] = asyncio.Queue()
             self.retry_queues[model] = PriorityQueue()
             self.processing_count[model] = 0
-            self.start_workers(model)
+            self.worker_tasks[model] = []
 
-    def start_workers(self, model: str):
-        """为指定模型启动多个工作线程"""
-        if model not in self.workers:
-            self.workers[model] = []
-        
+    async def start_workers(self, model: str):
+        """为指定模型启动多个异步工作任务"""
         for i in range(self.num_workers_per_model):
-            worker = threading.Thread(
-                target=self._worker, 
-                args=(model, i), 
-                daemon=True,
-                name=f"{model}-worker-{i}"
-            )
-            worker.start()
-            self.workers[model].append(worker)
-            print(f"启动工作线程: {model}-worker-{i}")
+            task = asyncio.create_task(self._worker(model, i))
+            self.worker_tasks[model].append(task)
+            print(f"启动异步工作任务: {model}-worker-{i}")
         
-        # 启动重试工作线程
-        if model not in self.retry_workers:
-            self.retry_workers[model] = []
-        
-        retry_worker = threading.Thread(
-            target=self._retry_worker,
-            args=(model,),
-            daemon=True,
-            name=f"{model}-retry-worker"
-        )
-        retry_worker.start()
-        self.retry_workers[model].append(retry_worker)
-        print(f"启动重试工作线程: {model}-retry-worker")
+        # 启动重试工作任务
+        retry_task = asyncio.create_task(self._retry_worker(model))
+        self.retry_tasks[model] = retry_task
+        print(f"启动重试工作任务: {model}-retry-worker")
 
-    def _worker(self, model: str, worker_id: int):
-        """工作线程处理队列中的工作流请求"""
-        print(f"工作线程 {model}-worker-{worker_id} 已启动")
+    async def _worker(self, model: str, worker_id: int):
+        """异步工作任务处理队列中的工作流请求"""
+        print(f"工作任务 {model}-worker-{worker_id} 已启动")
         
         while self.running:
             try:
-                if not self.queues[model].empty():
-                    request_data = self.queues[model].get(timeout=1)
-                    print(f"[{model}-worker-{worker_id}] 获取到请求: {request_data['requestId']}")
-                    
-                    self.processing_count[model] += 1
-                    
-                    # 创建新的事件循环来处理异步请求
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    
-                    try:
-                        loop.run_until_complete(self._process_workflow_request(request_data, model, worker_id, retry_count=0))
-                    finally:
-                        loop.close()
-                    
+                # 非阻塞获取，1秒超时
+                try:
+                    request_data = await asyncio.wait_for(
+                        self.pending_queues[model].get(), 
+                        timeout=1.0
+                    )
+                except asyncio.TimeoutError:
+                    continue
+                
+                print(f"[{model}-worker-{worker_id}] 获取到请求: {request_data['requestId']}")
+                
+                self.processing_count[model] += 1
+                
+                try:
+                    await self._process_workflow_request(request_data, model, worker_id, retry_count=0)
+                finally:
                     self.processing_count[model] -= 1
-                    self.queues[model].task_done()
-                else:
-                    time.sleep(0.1)
+                    self.pending_queues[model].task_done()
+                    
             except Exception as e:
-                print(f"[{model}-worker-{worker_id}] 工作线程错误: {e}")
+                print(f"[{model}-worker-{worker_id}] 工作任务错误: {e}")
                 if model in self.processing_count:
                     self.processing_count[model] = max(0, self.processing_count[model] - 1)
                 continue
 
-    def _retry_worker(self, model: str):
-        """重试工作线程处理失败的工作流请求"""
-        print(f"重试工作线程 {model}-retry-worker 已启动")
+    async def _retry_worker(self, model: str):
+        """重试工作任务处理失败的工作流请求"""
+        print(f"重试工作任务 {model}-retry-worker 已启动")
         
         while self.running:
             try:
-                if not self.retry_queues[model].empty():
-                    # 检查是否有待重试的请求
-                    priority, internal_request = self.retry_queues[model].get(timeout=1)
-                    
-                    # 检查是否达到重试延迟时间
-                    elapsed_time = time.time() - internal_request.created_time
-                    if elapsed_time < RETRY_DELAY:
-                        # 还没到重试时间，放回队列
-                        self.retry_queues[model].put((priority, internal_request))
-                        time.sleep(0.5)
-                        continue
-                    
-                    request_id = internal_request.request_data['requestId']
-                    retry_count = internal_request.retry_count
-                    
-                    print(f"[{model}-retry-worker] 开始第 {retry_count + 1} 次重试，requestId: {request_id}")
-                    
-                    self.processing_count[model] += 1
-                    
-                    # 创建新的事件循环来处理异步请求
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    
-                    try:
-                        loop.run_until_complete(
-                            self._process_workflow_request(
-                                internal_request.request_data, 
-                                model, 
-                                -1,  # 标记为重试工作线程
-                                retry_count=retry_count
-                            )
-                        )
-                    finally:
-                        loop.close()
-                    
+                await asyncio.sleep(0.5)
+                
+                # 检查重试队列（非阻塞）
+                if self.retry_queues[model].empty():
+                    continue
+                
+                priority, internal_request = self.retry_queues[model].get_nowait()
+                
+                # 检查是否达到重试延迟时间
+                elapsed_time = time.time() - internal_request.created_time
+                if elapsed_time < RETRY_DELAY:
+                    # 还没到重试时间，放回队列
+                    self.retry_queues[model].put((priority, internal_request))
+                    await asyncio.sleep(0.5)
+                    continue
+                
+                request_id = internal_request.request_data['requestId']
+                retry_count = internal_request.retry_count
+                
+                print(f"[{model}-retry-worker] 开始第 {retry_count + 1} 次重试，requestId: {request_id}")
+                
+                self.processing_count[model] += 1
+                
+                try:
+                    await self._process_workflow_request(
+                        internal_request.request_data, 
+                        model, 
+                        -1,  # 标记为重试工作任务
+                        retry_count=retry_count
+                    )
+                finally:
                     self.processing_count[model] -= 1
                     self.retry_queues[model].task_done()
-                else:
-                    time.sleep(0.5)
+                    
             except Exception as e:
-                print(f"[{model}-retry-worker] 重试线程错误: {e}")
+                print(f"[{model}-retry-worker] 重试任务错误: {e}")
                 if model in self.processing_count:
                     self.processing_count[model] = max(0, self.processing_count[model] - 1)
                 continue
@@ -280,7 +254,7 @@ class WorkflowQueueManager:
                     print(f"[{model}-worker-{worker_id}] 工作流 {request_data['requestId']} 校验失败，已达到最大重试次数")
                     error_result.error_message = f"工作流结构校验失败，已重试{retry_count}次: {', '.join(errors)}"
                     
-                    with self.completed_requests_lock:
+                    async with self.lock:
                         self.completed_requests[request_data["requestId"]] = error_result
                     
                     await self._push_single_result_to_java(error_result)
@@ -300,7 +274,7 @@ class WorkflowQueueManager:
             )
             
             # 缓存成功结果
-            with self.completed_requests_lock:
+            async with self.lock:
                 self.completed_requests[request_data["requestId"]] = result
             
             # 立即推送成功结果
@@ -341,7 +315,7 @@ class WorkflowQueueManager:
                 error_result.error_message = f"请求超时，已重试{retry_count}次: {error_msg}"
             
             # 缓存失败结果
-            with self.completed_requests_lock:
+            async with self.lock:
                 self.completed_requests[request_data["requestId"]] = error_result
             
             # 立即推送失败结果
@@ -359,7 +333,7 @@ class WorkflowQueueManager:
             )
             
             # 缓存失败结果
-            with self.completed_requests_lock:
+            async with self.lock:
                 self.completed_requests[request_data["requestId"]] = error_result
             
             # 立即推送失败结果
@@ -368,7 +342,7 @@ class WorkflowQueueManager:
     async def _push_single_result_to_java(self, result: WorkflowResult):
         """推送工作流结果到Java后端"""
         try:
-            callback_url = "http://localhost:7003/llm/result/experiment"
+            callback_url = "http://10.92.64.219:7003/llm/result/experiment"
             
             headers = {
                 "Content-Type": "application/json"
@@ -393,7 +367,7 @@ class WorkflowQueueManager:
         except Exception as e:
             print(f"推送工作流结果到Java端时发生未知错误: {e}")
 
-    def add_request(self, request: WorkflowGenerationRequest) -> int:
+    async def add_request(self, request: WorkflowGenerationRequest):
         """添加工作流请求到队列"""
         request_data = {
             "requestId": request.requestId,
@@ -405,33 +379,41 @@ class WorkflowQueueManager:
             "isWorkFlow": request.isWorkFlow
         }
 
-        if request.model not in self.queues:
-            print(f"创建新的工作流队列和工作线程: {request.model}")
-            self.queues[request.model] = Queue()
+        if request.model not in self.pending_queues:
+            print(f"创建新的工作流队列和工作任务: {request.model}")
+            self.pending_queues[request.model] = asyncio.Queue()
             self.retry_queues[request.model] = PriorityQueue()
             self.processing_count[request.model] = 0
-            self.start_workers(request.model)
+            self.worker_tasks[request.model] = []
+            await self.start_workers(request.model)
 
-        self.queues[request.model].put(request_data)
-        queue_size = self.queues[request.model].qsize()
+        await self.pending_queues[request.model].put(request_data)
+        queue_size = self.pending_queues[request.model].qsize()
         
         print(f"工作流请求 {request.requestId} 已添加到 {request.model} 队列，当前队列长度: {queue_size}")
 
     def get_queue_position(self, model: str) -> int:
-        return self.queues.get(model, Queue()).qsize()
+        queue = self.pending_queues.get(model)
+        return queue.qsize() if queue else 0
 
-    def get_result(self, request_id: str) -> Optional[WorkflowResult]:
-        with self.completed_requests_lock:
+    async def get_result(self, request_id: str) -> Optional[WorkflowResult]:
+        async with self.lock:
             return self.completed_requests.get(request_id)
 
-    def clear_all_results(self):
-        with self.completed_requests_lock:
+    async def clear_all_results(self):
+        async with self.lock:
             count = len(self.completed_requests)
             self.completed_requests.clear()
             return count
 
-    def stop(self):
+    async def stop(self):
         self.running = False
+        # 等待所有任务完成
+        for model, tasks in self.worker_tasks.items():
+            for task in tasks:
+                task.cancel()
+            if model in self.retry_tasks:
+                self.retry_tasks[model].cancel()
 
 
 # dify调用函数
@@ -628,17 +610,21 @@ workflow_queue_manager = WorkflowQueueManager(num_workers_per_model=NUM_WORKERS_
 
 @app.on_event("startup")
 async def startup_event():
-    """服务启动时注册到Consul"""
+    """服务启动时注册到Consul并启动所有工作任务"""
     SERVICE_PORT = 8004
     service_id = register_service(SERVICE_PORT)
     if service_id:
         app.state.service_id = service_id
         print(f"workflow_generator服务已注册到Consul，服务ID: {service_id}")
+    
+    # 启动所有模型的工作任务
+    for model in ["silicon-flow", "moonshot", "deepseek", "Qwen"]:
+        await workflow_queue_manager.start_workers(model)
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """服务关闭时从Consul注销"""
-    workflow_queue_manager.stop()
+    await workflow_queue_manager.stop()
     
     if hasattr(app.state, 'service_id'):
         deregister_service(app.state.service_id)
@@ -652,7 +638,7 @@ async def generate_workflow(request: WorkflowGenerationRequest):
         print(f"收到工作流生成请求: {request.requestId}, 模型: {request.model}")
         
         # 添加请求到队列
-        workflow_queue_manager.add_request(request)
+        await workflow_queue_manager.add_request(request)
         
         return AsyncWorkflowResponse(
             requestId=request.requestId,
@@ -670,7 +656,7 @@ async def health_check():
 @app.get("/workflow/result/{request_id}")
 async def get_workflow_result(request_id: str):
     """获取工作流生成结果"""
-    result = workflow_queue_manager.get_result(request_id)
+    result = await workflow_queue_manager.get_result(request_id)
     if result is None:
         raise HTTPException(status_code=404, detail=f"未找到请求ID为 {request_id} 的工作流结果")
     
@@ -679,7 +665,7 @@ async def get_workflow_result(request_id: str):
 @app.delete("/workflow/results")
 async def clear_all_workflow_results():
     """清空所有工作流结果缓存（用于测试）"""
-    count = workflow_queue_manager.clear_all_results()
+    count = await workflow_queue_manager.clear_all_results()
     return {"message": f"已清空所有工作流结果缓存，共删除 {count} 条记录"}
 
 @app.get("/workflow/queue/status")
@@ -689,7 +675,7 @@ async def get_workflow_queue_status():
     total_processing_count = 0
     total_retry_queue_length = 0
     
-    for model, queue in workflow_queue_manager.queues.items():
+    for model, queue in workflow_queue_manager.pending_queues.items():
         total_queue_length += queue.qsize()
         total_processing_count += workflow_queue_manager.processing_count[model]
         total_retry_queue_length += workflow_queue_manager.retry_queues[model].qsize()
@@ -706,8 +692,8 @@ async def get_workflow_queue_status():
                 "queueLength": queue.qsize(),
                 "retryQueueLength": workflow_queue_manager.retry_queues[model].qsize(),
                 "processingCount": workflow_queue_manager.processing_count[model],
-                "numWorkers": len(workflow_queue_manager.workers.get(model, []))
-            } for model, queue in workflow_queue_manager.queues.items()
+                "numWorkers": len(workflow_queue_manager.worker_tasks.get(model, []))
+            } for model, queue in workflow_queue_manager.pending_queues.items()
         }
     }
     
